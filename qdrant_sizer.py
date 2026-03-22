@@ -875,6 +875,52 @@ WRITE_PATTERNS = {
 }
 
 
+def _ask_choice(prompt: str, choices: dict[str, tuple], default_key: str) -> tuple:
+    """Prompt user to pick from numbered choices. Re-prompts on invalid input."""
+    while True:
+        raw = input(prompt).strip()
+        if raw in choices:
+            return choices[raw]
+        valid = ", ".join(choices.keys())
+        print(f"    Invalid choice '{raw}'. Please enter one of: {valid}")
+
+
+def _ask_int(prompt: str, min_val: int = 1, max_val: int = 10_000_000_000) -> int:
+    """Prompt for a positive integer. Re-prompts on invalid input."""
+    while True:
+        raw = input(prompt).strip()
+        try:
+            val = int(raw)
+        except ValueError:
+            print(f"    '{raw}' is not a valid integer. Please enter a number.")
+            continue
+        if val < min_val:
+            print(f"    Value must be at least {min_val}. Got {val}.")
+            continue
+        if val > max_val:
+            print(f"    Value must be at most {max_val:,}. Got {val:,}.")
+            continue
+        return val
+
+
+def _ask_float(prompt: str, min_val: float = 0, max_val: float = 100) -> float:
+    """Prompt for a number. Re-prompts on invalid input."""
+    while True:
+        raw = input(prompt).strip()
+        try:
+            val = float(raw)
+        except ValueError:
+            print(f"    '{raw}' is not a valid number. Please enter a number (e.g., 95 or 0.95).")
+            continue
+        if val < min_val:
+            print(f"    Value must be at least {min_val}. Got {val}.")
+            continue
+        if val > max_val:
+            print(f"    Value must be at most {max_val}. Got {val}.")
+            continue
+        return val
+
+
 def interactive():
     print("\n" + "=" * 64)
     print("  Qdrant Cluster Sizer — Interactive Mode")
@@ -885,30 +931,32 @@ def interactive():
     print("\n  Embedding type:")
     for k, (_, label) in EMBEDDING_TYPES.items():
         print(f"    {k}. {label}")
-    et_key = input("  Choice [1-4]: ").strip()
-    embedding_type = EMBEDDING_TYPES.get(et_key, EMBEDDING_TYPES["4"])[0]
+    _, embedding_type = _ask_choice("  Choice [1-4]: ", {
+        k: (k, v[0]) for k, v in EMBEDDING_TYPES.items()
+    }, "4")
 
-    dimensions = int(input("  Dimensions: ").strip())
-    num_vectors = int(input("  Number of vectors: ").strip())
-    peak_qps = int(input("  Peak QPS: ").strip())
+    dimensions = _ask_int("  Dimensions: ", min_val=1, max_val=65536)
+    num_vectors = _ask_int("  Number of vectors: ", min_val=1)
+    peak_qps = _ask_int("  Peak QPS: ", min_val=1)
 
     print("\n  Write pattern:")
     for k, (_, label) in WRITE_PATTERNS.items():
         print(f"    {k}. {label}")
-    wp_key = input("  Choice [1-3]: ").strip()
-    write_pattern = WRITE_PATTERNS.get(wp_key, WRITE_PATTERNS["1"])[0]
+    _, write_pattern = _ask_choice("  Choice [1-3]: ", {
+        k: (k, v[0]) for k, v in WRITE_PATTERNS.items()
+    }, "1")
 
     peak_write_rate = 0
     batch_size = 0
     if write_pattern == "streaming":
-        peak_write_rate = int(input("  Peak write rate (vectors/s): ").strip())
+        peak_write_rate = _ask_int("  Peak write rate (vectors/s): ", min_val=0)
     elif write_pattern == "batch":
-        batch_size = int(input("  Batch size (vectors per load): ").strip())
+        batch_size = _ask_int("  Batch size (vectors per load): ", min_val=1)
 
-    p99_latency_ms = int(input("  P99 latency SLA (ms): ").strip())
-    recall_pct = float(input("  Recall target (e.g., 95 for 95%): ").strip())
+    p99_latency_ms = _ask_int("  P99 latency SLA (ms): ", min_val=1, max_val=60000)
+    recall_pct = _ask_float("  Recall target (e.g., 95 for 95%): ", min_val=0.01, max_val=100)
     recall_target = recall_pct / 100 if recall_pct > 1 else recall_pct
-    top_k = int(input("  Top-k: ").strip())
+    top_k = _ask_int("  Top-k: ", min_val=1, max_val=10000)
 
     config = {
         "dataset_name": dataset_name,
