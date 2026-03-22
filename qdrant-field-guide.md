@@ -822,92 +822,88 @@ Common reference prices (AWS us-east-1, on-demand, approximate):
 
 ## Stage 10: Build Your Architecture Summary
 
-Fill in this template with your decisions from Stages 1-9:
+Fill in this template with your decisions from Stages 1-9.
 
-```
-╔══════════════════════════════════════════════════════════╗
-║  ARCHITECTURE SUMMARY                                    ║
-╠══════════════════════════════════════════════════════════╣
-║                                                          ║
-║  Dataset: _______________________________________________║
-║  Vectors: ____________  Dimensions: ____________________║
-║  Embedding Class: ______________________________________║
-║  Distance Metric: ______________________________________║
-║                                                          ║
-║  SLA Requirements                                        ║
-║  ─────────────────                                       ║
-║  Target QPS:     ____________                            ║
-║  P99 Latency:    ____________                            ║
-║  Recall Target:  ____________                            ║
-║  Top-k:          ____________                            ║
-║                                                          ║
-║  Regime Classification                                   ║
-║  ─────────────────────                                   ║
-║  Recall Regime:  ____________                            ║
-║  Latency Tier:   ____________                            ║
-║  Write Pattern:  ____________                            ║
-║                                                          ║
-║  Quantization Strategy (from Stage 2)                    ║
-║  ─────────────────────                                   ║
-║  Method:         ____________                            ║
-║  Oversampling:   ____________                            ║
-║  Rescore:        ____________                            ║
-║                                                          ║
-║  HNSW Parameters (from Stage 3)                          ║
-║  ───────────────                                         ║
-║  m:              ____________                            ║
-║  ef_construct:   ____________                            ║
-║  ef (search):    ____________  (preliminary — benchmark) ║
-║                                                          ║
-║  Memory Calculation (from Stage 5)                       ║
-║  ──────────────────                                      ║
-║  Quantized vectors:  ________ (location: RAM / disk)     ║
-║  Full vectors:       ________ (location: RAM / disk)     ║
-║  HNSW index:         ________ (location: RAM)            ║
-║  Page cache:         ________                            ║
-║  Process overhead:   500 MB                              ║
-║  Merge headroom:     ________                            ║
-║  ────────────────────────────                            ║
-║  Total RAM needed:   ________                            ║
-║                                                          ║
-║  Disk Calculation (from Stage 6)                         ║
-║  ────────────────                                        ║
-║  Base disk:              ________                        ║
-║  WAL space:              ________                        ║
-║  Segment merge overhead: ________                        ║
-║  Snapshot space:         ________                        ║
-║  ────────────────────────────                            ║
-║  Total disk needed:      ________                        ║
-║  Disk type:              ________                        ║
-║                                                          ║
-║  Compute Calculation (from Stage 7)                      ║
-║  ───────────────────                                     ║
-║  Per-query CPU time: ________                            ║
-║  Cores for QPS:      ________                            ║
-║  Cores for writes:   ________                            ║
-║  Headroom (___%):    ________                            ║
-║  ────────────────────────────                            ║
-║  Total vCPUs needed: ________                            ║
-║                                                          ║
-║  Topology (from Stage 7e)                                ║
-║  ────────                                                ║
-║  Nodes:          ____________                            ║
-║  Shards:         ____________                            ║
-║  Replicas:       ____________                            ║
-║                                                          ║
-║  Instance & Cost (from Stage 9)                          ║
-║  ──────────────────────────────                          ║
-║  Instance type:  ____________                            ║
-║  Cost/month:     ____________  (on-demand)               ║
-║  Cost/month:     ____________  (reserved)                ║
-║                                                          ║
-║  Future Optimizations to Explore                         ║
-║  ───────────────────────────────                         ║
-║  ________________________________________________________║
-║  ________________________________________________________║
-║                                                          ║
-╚══════════════════════════════════════════════════════════╝
-```
+### Dataset & Classification
+
+| Field | Value |
+|-------|-------|
+| Dataset | _______________ |
+| Vectors | _______________ |
+| Dimensions | _______________ |
+| Embedding Class | _______________ |
+| Distance Metric | _______________ |
+
+### SLA Requirements
+
+| Field | Value |
+|-------|-------|
+| Target QPS | _______________ |
+| P99 Latency | _______________ |
+| Recall Target | _______________ |
+| Top-k | _______________ |
+| Recall Regime | _______________ |
+| Latency Tier | _______________ |
+| Write Pattern | _______________ |
+
+### Quantization & HNSW (from Stages 2-3)
+
+| Field | Value |
+|-------|-------|
+| Quantization method | _______________ |
+| Oversampling | _______________ |
+| Rescore | _______________ |
+| m | _______________ |
+| ef_construct | _______________ |
+| hnsw_ef (search) | _______________ _(preliminary — benchmark)_ |
+
+### Memory (from Stage 5)
+
+| Component | Size | Location |
+|-----------|------|----------|
+| Quantized vectors | _______________ | RAM / disk |
+| Full vectors | _______________ | RAM / disk |
+| HNSW index | _______________ | RAM |
+| Page cache | _______________ | — |
+| Process overhead | 500 MB | — |
+| Merge headroom | _______________ | — |
+| **Total RAM** | **_______________** | |
+
+### Disk (from Stage 6)
+
+| Component | Size |
+|-----------|------|
+| Base disk | _______________ |
+| WAL space | _______________ |
+| Segment merge overhead | _______________ |
+| Snapshot space | _______________ |
+| **Total disk** | **_______________** |
+| Disk type | _______________ |
+
+### Compute (from Stage 7)
+
+| Component | Value |
+|-----------|-------|
+| Per-query CPU time | _______________ |
+| Cores for QPS | _______________ |
+| Cores for writes | _______________ |
+| Headroom (___%) | _______________ |
+| **Total vCPUs** | **_______________** |
+
+### Topology & Cost (from Stages 7e, 9)
+
+| Field | Value |
+|-------|-------|
+| Nodes / Shards / Replicas | ___ / ___ / ___ |
+| Instance type | _______________ |
+| Cost/month (on-demand) | _______________ |
+| Cost/month (reserved) | _______________ |
+
+### Future Optimizations
+
+1. _______________
+2. _______________
+3. _______________
 
 ---
 
