@@ -652,50 +652,48 @@ Minimum recommended: 4 vCPUs (to allow OS, Qdrant, and at least 2 query threads)
 
 ### Step 7e: Single Node or Multiple?
 
-```
-Does total_vcpus fit in a single available machine (typically max 64-96 vCPUs)?
-AND does total_ram (from Stage 5) fit in a single available machine?
-│
-├─ YES to both ──► Single node. This is the default.
-│                  Record: nodes=1, shards=1, replicas=1.
-│
-│                  Topology is a CUSTOMER DECISION, not a sizing decision.
-│                  The purpose of this guide is to determine the minimum viable
-│                  infrastructure. Replication is a business/SLA decision that
-│                  the customer makes after reviewing your initial architecture.
-│
-│                  Present to the customer as a recommendation:
-│                  "HA option: add 1 replica (replication_factor=2) for failover.
-│                  This doubles infrastructure cost but prevents SLA breach
-│                  during node failure. Recommended if the P99 SLA is contractual."
-│                  Record under "Future Optimizations" in the summary template.
-│
-│                  NOTE on bursty QPS:
-│                  If peak QPS occurs in a defined window (e.g., 6 hours/day),
-│                  the node will be idle outside that window. This is expected.
-│                  Scaling replicas up/down to match demand is a cost optimization
-│                  to explore AFTER validating the single-node architecture works.
-│                  Record under "Future Optimizations" in Stage 9.
-│
-└─ NO to either ──► You need multiple nodes.
-   │
-   ├─ RAM is the bottleneck (data doesn't fit in one node)?
-   │  └─► Shards: partition data across nodes
-   │      num_shards = ceil(total_ram / max_ram_per_node)
-   │      Note: each query hits all shards, adding ~2-5ms network latency.
-   │
-   └─ CPU is the bottleneck (QPS too high for one node)?
-      └─► Replicas: full copies of data, distribute QPS
-          num_replicas = ceil(total_vcpus / max_vcpus_per_node)
-          Each replica needs total_ram, so total cost = replicas x node_cost.
+```mermaid
+flowchart TD
+    Check{"total_vcpus fits in one machine?\nAND total_ram fits?"}
+    Check -->|"YES to both"| Single["Single node\nnodes=1, shards=1, replicas=1"]
+    Check -->|"NO to either"| Multi{"What's the bottleneck?"}
 
-Qdrant collection creation parameters for topology:
-  shard_number:              number of shards (set at creation, manual choice)
-  replication_factor:        copies per shard (e.g., 2 = primary + 1 replica)
-  write_consistency_factor:  how many replicas must ACK a write before responding
-                             (must be <= replication_factor; set to 1 for async
-                             replication, higher for stronger durability)
+    Multi -->|"RAM doesn't fit"| Shards["Shards\nPartition data across nodes\nnum_shards = ceil(total_ram / max_ram)"]
+    Multi -->|"CPU too high"| Replicas["Replicas\nFull copies, distribute QPS\nnum_replicas = ceil(total_vcpus / max_vcpus)"]
+
+    Single --> HA["Present HA option\nto customer"]
+    Single --> Burst["Flag bursty QPS\nas future optimization"]
+
+    style Single fill:#14532d,stroke:#22c55e,color:#86efac
+    style Shards fill:#422006,stroke:#f59e0b,color:#fde68a
+    style Replicas fill:#1e3a5f,stroke:#3b82f6,color:#93c5fd
+    style Check fill:#18181b,stroke:#3f3f46,color:#e4e4e7
+    style Multi fill:#18181b,stroke:#3f3f46,color:#e4e4e7
+    style HA fill:#27272a,stroke:#3f3f46,color:#a1a1aa
+    style Burst fill:#27272a,stroke:#3f3f46,color:#a1a1aa
 ```
+
+**Single node is the default.** Topology is a CUSTOMER DECISION, not a sizing decision.
+This guide produces the minimum viable infrastructure. Replication is a business/SLA
+decision the customer makes after reviewing your initial architecture.
+
+- **HA option:** Present as a recommendation — "add `replication_factor=2` for failover.
+  Doubles infrastructure cost but prevents SLA breach during node failure. Recommended
+  if the P99 SLA is contractual." Record under Future Optimizations.
+- **Bursty QPS:** If peak QPS occurs in a defined window (e.g., 6 hours/day), the node
+  will be idle outside that window. This is expected. Scaling replicas up/down is a cost
+  optimization to explore AFTER validating the single-node architecture works.
+- **Shards:** Each query must hit all shards, adding ~2-5ms network latency. Use only
+  when data doesn't fit in one node's RAM.
+- **Replicas:** Each replica needs `total_ram`, so total cost = replicas x node cost.
+
+**Qdrant collection creation parameters:**
+
+| Parameter | Purpose |
+|-----------|---------|
+| `shard_number` | Number of shards (set at creation, manual choice) |
+| `replication_factor` | Copies per shard (e.g., 2 = primary + 1 replica) |
+| `write_consistency_factor` | Replicas that must ACK a write before responding (must be <= `replication_factor`; set to 1 for async replication) |
 
 ---
 
