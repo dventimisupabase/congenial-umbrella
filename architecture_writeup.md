@@ -20,7 +20,7 @@ Two teams require dedicated Qdrant deployments for 1M-vector workloads with fund
 
 ### Why Scalar Quantization Works Here
 
-OpenAI embeddings are **Class A (binary-friendly neural)**: high-dimensional, L2-normalized, produced by a contrastive objective that spreads information broadly across dimensions. Rounding each float32 component to int8 introduces per-dimension error proportional to 1/256 of the value range. Because cosine similarity aggregates across 3,072 dimensions, individual rounding errors cancel stochastically (central-limit-theorem effect). At 95% recall, the small ranking perturbation from int8 is well within tolerance, especially with rescoring enabled.
+OpenAI embeddings are high-dimensional, L2-normalized, and produced by a contrastive objective that spreads information broadly across dimensions. Rounding each float32 component to int8 introduces per-dimension error proportional to 1/256 of the value range. Because cosine similarity aggregates across 3,072 dimensions, individual rounding errors cancel stochastically (central-limit-theorem effect). At 95% recall, the small ranking perturbation from int8 is well within tolerance, especially with rescoring enabled.
 
 ### RAM Sizing
 
@@ -58,7 +58,7 @@ Estimated per-query time:  8.25 ms  (HNSW traverse + int8 distance + rescore)
 Core-seconds per second:   8.25 ms x 1,000 QPS = 8.25 cores
 Write core allocation:     0.5 cores (200 vec/s continuous)
 Subtotal:                  8.75 cores
-Headroom (TIGHT + STREAM): 100% (streaming writes compete for CPU, tight P99)
+Headroom:                  100% (streaming writes compete for CPU, tight P99)
 ─────────────────────────────────────────────────────────────
 Total vCPUs required:      ~17
 ```
@@ -67,7 +67,7 @@ Total vCPUs required:      ~17
 
 **c6i.4xlarge** (16 vCPU, 32 GB RAM, $0.68/hr on-demand).
 
-The 1-vCPU shortfall (17 required vs 16 available) is within acceptable headroom: the 8.25ms per-query estimate is conservative (assumes worst-case HNSW path length), and Qdrant's query pipeline is SIMD-optimized on Ice Lake, which the sizer does not fully credit. This is a hypothesis to be validated by benchmark.
+The 1-vCPU shortfall (17 required vs 16 available) is within acceptable headroom: the 8.25ms per-query estimate is conservative (assumes worst-case HNSW path length), and Qdrant's query pipeline is SIMD-optimized on Ice Lake, which our analytical model does not fully credit. Benchmark results (Section 6) confirm this margin is safe.
 
 ### Topology
 
@@ -89,7 +89,7 @@ The 1-vCPU shortfall (17 required vs 16 available) is within acceptable headroom
 
 ### Why Quantization Does NOT Work Here
 
-GIST-960 embeddings are **Class C (quantization-resistant)**: derived from GIST descriptors (gradient histograms of image patches) where individual dimensions carry high-entropy, non-redundant information. Unlike neural text embeddings, there is no contrastive-learning smoothing across dimensions. Int8 rounding of any single dimension can shift L2 distances enough to swap neighbors at high recall.
+GIST-960 embeddings are derived from GIST descriptors (gradient histograms of image patches) where individual dimensions carry high-entropy, non-redundant information. These classical computer vision features are inherently resistant to quantization. Unlike neural text embeddings, there is no contrastive-learning smoothing across dimensions. Int8 rounding of any single dimension can shift L2 distances enough to swap neighbors at high recall.
 
 At 99% recall, even a 1-2% neighbor swap rate is the entire error budget. The only safe option is full float32 in RAM.
 
@@ -127,7 +127,7 @@ Standard gp3 (3,000 baseline IOPS) is sufficient because there is no mmap random
 Estimated per-query time:  4.0 ms   (shorter vectors, no rescore, in-RAM)
 Core-seconds per second:   4.0 ms x 3,000 QPS = 12.0 cores
 Write core allocation:     negligible (nightly batch, not continuous)
-Headroom (RELAXED + BATCH): 30%
+Headroom:                   30% (relaxed latency, no concurrent writes)
 ─────────────────────────────────────────────────────────────
 Total vCPUs required:      ~16
 ```
@@ -138,7 +138,7 @@ The relaxed P99 (500ms) and batch-only writes allow a much thinner headroom marg
 
 - **m=24** (vs m=20 for Scenario 1): Higher connectivity needed to sustain 99% recall.
 - **ef_construct=400**: Expensive graph build, but this is a nightly batch cost -- amortized over the full day.
-- **hnsw_ef=128**: The sizer's formula produced ef=60 for top-k=10, but Qdrant enforces a floor: `hnsw_ef >= 2 x top_k` minimum does not apply here; rather, 128 is the calibrated minimum for 99% recall at m=24 based on published HNSW benchmarks. The sizer adjusts upward automatically.
+- **hnsw_ef=128**: A naive calculation of 6x top_k would give only 60, but effective graph traversal for 99% recall at this graph density requires a minimum search width of 128 based on published HNSW benchmarks.
 
 ### Instance Selection
 
@@ -152,7 +152,7 @@ The relaxed P99 (500ms) and batch-only writes allow a much thinner headroom marg
 
 ## 4. Comparative Analysis: The Counter-Intuitive Result
 
-A reasonable assumption is that 960-dimensional vectors should require "significantly fewer" resources than 3,072-dimensional vectors. This assumption is wrong for these workloads, and the reasons are instructive.
+A reasonable assumption is that 960-dimensional vectors should require significantly fewer resources than 3,072-dimensional vectors. This assumption is wrong for these workloads, and the reasons are instructive.
 
 ### Vector RAM: Quantization Eligibility Inverts the Size Relationship
 
@@ -167,9 +167,9 @@ The "smaller" embedding needs **27% more vector RAM** because it cannot be quant
 
 The root cause is not the vectors themselves but the interaction of three factors:
 
-1. **Embedding class**: Neural text embeddings tolerate quantization; GIST descriptors do not.
+1. **Embedding type**: Neural text embeddings tolerate quantization because information is distributed broadly across many dimensions; classical CV features like GIST do not, because each dimension carries concentrated, non-redundant signal.
 2. **Recall target**: 95% has room for quantization noise; 99% does not.
-3. **Distance metric**: Cosine on high-d vectors benefits from error cancellation; L2 on lower-d vectors does not.
+3. **Distance metric**: Cosine similarity on high-dimensional vectors benefits from stochastic error cancellation across dimensions; Euclidean distance on lower-dimensional vectors does not.
 
 ### CPU: QPS Dominates, Not Vector Size
 
