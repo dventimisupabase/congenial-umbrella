@@ -135,9 +135,7 @@ factor is set later in Stage 3d — do not pick an oversampling value from this 
 {"product": {"compression": "x32", "always_ram": true}}
 ```
 
-```text
-None: omit quantization_config entirely
-```
+None: omit `quantization_config` entirely.
 
 Qdrant also supports Product Quantization (up to 64x compression), but it has
 higher indexing cost and lower recall than scalar. Use only when memory is the
@@ -269,7 +267,7 @@ flowchart TD
 Must be paired with: `search_params.quantization.rescore = true`
 
 Example:
-```text
+```python
 client.query_points(..., search_params={
   "hnsw_ef": 200,
   "quantization": {"rescore": true, "oversampling": 2.0}
@@ -296,10 +294,7 @@ If exploring binary quantization as a future optimization (see Stage 2 NOTE):
 | Binary | MODERATE | 4.0x |
 | Binary | STRICT | Not recommended (use scalar or none) |
 
-```text
-rescore_candidates = oversampling_factor x top_k
-These candidates are re-ranked using full-precision vectors.
-```
+> **rescore_candidates** = `oversampling_factor` x `top_k` — these candidates are re-ranked using full-precision vectors.
 
 ---
 
@@ -353,19 +348,18 @@ full vectors one tier toward RAM (marked with * below).
 | *if no quant: | RAM | RAM | RAM* | mmap (SSD) |
 | Payload/metadata | RAM | RAM or mmap | mmap | mmap |
 
-```text
-"RAM or mmap" = use RAM. Only fall back to mmap if RAM budget is exceeded
-after completing Stage 5.
+**"RAM or mmap"** = use RAM. Only fall back to mmap if RAM budget is exceeded after completing Stage 5.
 
-* = When there is no quantization layer, every search query reads full vectors
-    directly. mmap adds per-query I/O latency that compounds with high ef values.
-    Promoting to RAM avoids this.
+> **\* No-quantization promotion:** When there is no quantization layer, every search query reads full vectors directly. mmap adds per-query I/O latency that compounds with high ef values. Promoting to RAM avoids this.
 
-Qdrant implementation:
-  "RAM" = on_disk: false (default) for vectors; always_ram: true for quantized
-  "mmap" = on_disk: true for vectors; or rely on memmap_threshold auto-promotion
-  "HNSW in RAM" = hnsw_config.on_disk: false (default)
-```
+**Qdrant implementation:**
+
+| Placement | Qdrant Config |
+|-----------|--------------|
+| RAM (vectors) | `on_disk: false` (default) |
+| RAM (quantized) | `always_ram: true` in quantization_config |
+| mmap (vectors) | `on_disk: true`, or rely on `memmap_threshold` auto-promotion |
+| HNSW in RAM | `hnsw_config.on_disk: false` (default) |
 
 ---
 
@@ -387,12 +381,21 @@ flowchart TD
 
 ### Step 5b: HNSW Index Memory
 
-```text
-Use the m value you chose in Stage 3, Step 3a.
+Use the `m` value you chose in Stage 3, Step 3a.
 
-hnsw_memory = num_vectors x m x 2 x 8 bytes x 1.1
+```mermaid
+flowchart LR
+    M["m\n(from Stage 3a)"] --> Formula["hnsw_memory =\nnum_vectors x m x 2 x 8 bytes x 1.1"]
+    V["num_vectors"] --> Formula
+    Formula --> Output["hnsw_memory\n(bytes)"]
 
-The formula: each vector has up to m bidirectional links at layer 0
+    style M fill:#1e3a5f,stroke:#3b82f6,color:#93c5fd
+    style V fill:#1e3a5f,stroke:#3b82f6,color:#93c5fd
+    style Formula fill:#27272a,stroke:#3f3f46,color:#a1a1aa
+    style Output fill:#14532d,stroke:#22c55e,color:#86efac
+```
+
+The formula: each vector has up to `m` bidirectional links at layer 0
 (so m x 2 link slots), each stored as an 8-byte reference. The 1.1
 multiplier (10%) accounts for the multi-level HNSW structure: a small
 fraction of nodes are promoted to higher layers with additional links.
@@ -401,11 +404,13 @@ NOTE: This is a theoretical approximation. Qdrant does not publish
 their exact graph memory layout. The formula is derived from the
 original HNSW paper and is a reasonable estimate for sizing purposes.
 
-Common values (per 1M vectors):
-  m=16:  1,000,000 x 256 x 1.1 ≈ 282 MB
-  m=20:  1,000,000 x 320 x 1.1 ≈ 352 MB
-  m=32:  1,000,000 x 512 x 1.1 ≈ 563 MB
-```
+**Common values (per 1M vectors):**
+
+| m | Calculation | Approximate HNSW Memory |
+|---|-------------|------------------------|
+| 16 | 1,000,000 x 256 x 1.1 | ~282 MB |
+| 20 | 1,000,000 x 320 x 1.1 | ~352 MB |
+| 32 | 1,000,000 x 512 x 1.1 | ~563 MB |
 
 ### Step 5c: Page Cache Budget
 
@@ -425,35 +430,31 @@ flowchart TD
 
 ### Step 5d: Process Overhead
 
-```text
-process_overhead = 500 MB (fixed)
-
-This covers:
-  - Qdrant server process (heap, thread stacks, buffers)
-  - Point ID mapping and internal data structures
-  - Payload index (for moderate payloads; add more if payloads are large)
-  - OS kernel and system services
-```
+> **process_overhead = 500 MB (fixed)**
+>
+> This covers:
+> - Qdrant server process (heap, thread stacks, buffers)
+> - Point ID mapping and internal data structures
+> - Payload index (for moderate payloads; add more if payloads are large)
+> - OS kernel and system services
 
 ### Step 5e: Total RAM
 
-```text
-total_ram = ram_components + page_cache + process_overhead + merge_headroom
+```mermaid
+flowchart TD
+    RC["ram_components\n(HNSW index + quantized vectors if RAM\n+ full vectors if RAM)"] --> Sum["total_ram =\nram_components + page_cache\n+ process_overhead + merge_headroom"]
+    PC["page_cache\n(from Step 5c)"] --> Sum
+    PO["process_overhead\n(500 MB)"] --> Sum
+    MH["merge_headroom\n(ram_components x 0.10)"] --> Sum
 
-Where:
-  ram_components = sum of (components placed in RAM from Stage 4 table)
-                   This includes: HNSW index + quantized vectors (if RAM)
-                   + full vectors (if RAM)
+    Sum --> Round["Round up to nearest\nstandard instance RAM tier:\n4, 8, 16, 32, 64, 128, 256 GB"]
 
-  page_cache = from Step 5c
-
-  process_overhead = 500 MB (from Step 5d)
-
-  merge_headroom = ram_components x 0.10
-    (10% — during segment merges, old and new data coexist briefly in RAM)
-
-Round up to the nearest standard instance RAM tier:
-  4 GB, 8 GB, 16 GB, 32 GB, 64 GB, 128 GB, 256 GB
+    style RC fill:#1e3a5f,stroke:#3b82f6,color:#93c5fd
+    style PC fill:#1e3a5f,stroke:#3b82f6,color:#93c5fd
+    style PO fill:#1e3a5f,stroke:#3b82f6,color:#93c5fd
+    style MH fill:#1e3a5f,stroke:#3b82f6,color:#93c5fd
+    style Sum fill:#27272a,stroke:#3f3f46,color:#a1a1aa
+    style Round fill:#14532d,stroke:#22c55e,color:#86efac
 ```
 
 ---
@@ -465,61 +466,67 @@ it's also in RAM (Qdrant uses disk as the durable backing store).
 
 ### Step 6a: Base Disk
 
-```text
-base_disk = full_vector_memory + quantized_memory + hnsw_on_disk
+```mermaid
+flowchart LR
+    FV["full_vector_memory\n(num_vectors x dimensions x 4 bytes)"] --> Sum["base_disk =\nfull_vector_memory\n+ quantized_memory\n+ hnsw_on_disk"]
+    QM["quantized_memory\n(0 if no quantization)"] --> Sum
+    HN["hnsw_on_disk\n(= hnsw_memory, persisted\neven if loaded into RAM)"] --> Sum
 
-Where:
-  full_vector_memory = num_vectors x dimensions x 4 bytes  (always stored on disk)
-  quantized_memory   = size of quantized vectors (0 if no quantization)
-  hnsw_on_disk       = hnsw_memory (index is persisted to disk even if loaded into RAM)
+    style FV fill:#1e3a5f,stroke:#3b82f6,color:#93c5fd
+    style QM fill:#1e3a5f,stroke:#3b82f6,color:#93c5fd
+    style HN fill:#1e3a5f,stroke:#3b82f6,color:#93c5fd
+    style Sum fill:#14532d,stroke:#22c55e,color:#86efac
 ```
 
 ### Step 6b: WAL (Write-Ahead Log) Space
 
-```text
 Qdrant uses a WAL for durability. Configuration (in qdrant config YAML):
-  wal:
-    wal_capacity_mb: 32        # size per WAL segment (default 32 MB)
-    wal_segments_ahead: 0      # pre-created segments for write perf (default 0)
-
+`wal.wal_capacity_mb` (default 32 MB per segment), `wal.wal_segments_ahead` (default 0).
 WAL accumulates writes before they're flushed to segments.
 
-STREAMING writes:
-  wal_space = 2 GB
-  (Sufficient for most streaming workloads up to 500 writes/s.
-  For >500/s, use: peak_write_rate x avg_vector_bytes x 60 seconds x 2)
+```mermaid
+flowchart TD
+    Start{"Write pattern?"} -->|"STREAMING"| Stream["wal_space = 2 GB\n\nSufficient for most streaming\nworkloads up to 500 writes/s.\nFor >500/s use:\npeak_write_rate x avg_vector_bytes\nx 60 seconds x 2"]
+    Start -->|"BATCH"| Batch["wal_space =\nbatch_size x avg_vector_bytes x 2\n\nwhere avg_vector_bytes =\ndimensions x 4 (float32)\nThe x2 accounts for WAL segments\ncoexisting before compaction\n\nFloor: max(calculated, 1 GB)"]
+    Start -->|"RARE / STATIC"| Static["wal_space = 1 GB\n(minimal, just for\noperational headroom)"]
 
-BATCH writes:
-  wal_space = batch_size x avg_vector_bytes x 2
-  Where avg_vector_bytes = dimensions x 4 (float32 size per vector).
-  The x2 accounts for WAL segments coexisting before compaction.
-  Apply floor: wal_space = max(calculated, 1 GB)
-
-RARE/STATIC writes:
-  wal_space = 1 GB (minimal, just for operational headroom)
+    style Start fill:#18181b,stroke:#3f3f46,color:#e4e4e7
+    style Stream fill:#1e3a5f,stroke:#3b82f6,color:#93c5fd
+    style Batch fill:#422006,stroke:#f59e0b,color:#fde68a
+    style Static fill:#14532d,stroke:#22c55e,color:#86efac
 ```
 
 ### Step 6c: Operational Headroom
 
-```text
 Disk operations that temporarily require extra space:
 
-segment_merge_overhead = base_disk x 0.50
-  (During merges, old and new segments coexist. Worst case is a full
-  rebuild = 1.0x, but 0.5x covers typical incremental merges.)
+```mermaid
+flowchart TD
+    BD["base_disk"] --> Merge["segment_merge_overhead =\nbase_disk x 0.50\n\nDuring merges, old and new segments\ncoexist. Worst case is a full rebuild\n= 1.0x, but 0.5x covers typical\nincremental merges."]
+    BD --> Snap["snapshot_space =\nbase_disk x 1.0\n\nOne full snapshot for backup/recovery.\nSet to 0 if snapshots are stored\nexternally or not used."]
 
-snapshot_space = base_disk x 1.0
-  (One full snapshot for backup/recovery. Set to 0 if snapshots are
-  stored externally or not used.)
+    style BD fill:#1e3a5f,stroke:#3b82f6,color:#93c5fd
+    style Merge fill:#422006,stroke:#f59e0b,color:#fde68a
+    style Snap fill:#422006,stroke:#f59e0b,color:#fde68a
 ```
 
 ### Step 6d: Total Disk
 
-```text
-total_disk = base_disk + wal_space + segment_merge_overhead + snapshot_space
+```mermaid
+flowchart TD
+    BD["base_disk"] --> Sum["sum =\nbase_disk + wal_space\n+ segment_merge_overhead\n+ snapshot_space"]
+    WS["wal_space"] --> Sum
+    MO["segment_merge_overhead"] --> Sum
+    SS["snapshot_space"] --> Sum
 
-Minimum recommended: 30 GB (to avoid running into filesystem overhead
-on very small datasets).
+    Sum --> Max["total_disk =\nmax(sum, 30 GB)\n\nMinimum 30 GB recommended\nto avoid filesystem overhead\non very small datasets"]
+
+    style BD fill:#1e3a5f,stroke:#3b82f6,color:#93c5fd
+    style WS fill:#1e3a5f,stroke:#3b82f6,color:#93c5fd
+    style MO fill:#1e3a5f,stroke:#3b82f6,color:#93c5fd
+    style SS fill:#1e3a5f,stroke:#3b82f6,color:#93c5fd
+    style Sum fill:#27272a,stroke:#3f3f46,color:#a1a1aa
+    style Max fill:#14532d,stroke:#22c55e,color:#86efac
 ```
 
 ### Step 6e: Disk Type
@@ -555,32 +562,25 @@ and the cost of each distance computation (driven by dimensions and quantization
 | dims 1024-2048 | ~0.8ms | ~1.5ms | ~3.0ms |
 | dims 2048-4096 | ~1.0ms | ~2.0ms | ~5.0ms |
 
-```text
-These assume:
-  - ef = 64 (the reference point for all adjustments below)
-  - Warm cache (data in RAM or OS page cache)
-  - Single-threaded per query
-  - Includes graph traversal overhead (memory access, pointer chasing)
-  - Does NOT include rescoring (added separately below)
-```
+These assume: ef = 64 (the reference point for all adjustments below), warm cache (data in RAM or OS page cache), single-threaded per query, includes graph traversal overhead (memory access, pointer chasing), does NOT include rescoring (added separately below).
 
 **Step 2: Adjust for your actual ef value.**
 
-```text
 The relationship between ef and query time is roughly linear (not
 exactly, due to early termination, but close enough for sizing).
 
-ef_adjustment = your_ef / 64
+```mermaid
+flowchart LR
+    EF["your_ef"] --> Div["ef_adjustment =\nyour_ef / 64"] --> Mul["per_query_base =\ntable_value x ef_adjustment"]
+    TV["table_value\n(from Step 1)"] --> Mul
 
-per_query_base = table_value x ef_adjustment
-
-Examples:
-  ef = 64:   adjustment = 1.0x (baseline)
-  ef = 128:  adjustment = 2.0x
-  ef = 200:  adjustment = 3.1x
-  ef = 256:  adjustment = 4.0x
-  ef = 512:  adjustment = 8.0x
+    style EF fill:#1e3a5f,stroke:#3b82f6,color:#93c5fd
+    style TV fill:#1e3a5f,stroke:#3b82f6,color:#93c5fd
+    style Div fill:#27272a,stroke:#3f3f46,color:#a1a1aa
+    style Mul fill:#14532d,stroke:#22c55e,color:#86efac
 ```
+
+Examples: ef = 64 → adjustment = 1.0x (baseline), ef = 128 → 2.0x, ef = 200 → 3.1x, ef = 256 → 4.0x, ef = 512 → 8.0x.
 
 **Step 3: Add rescoring cost (if quantizing).**
 
@@ -615,15 +615,11 @@ flowchart TD
 
 **Step 5: Total per-query time.**
 
-```text
-per_query_time = per_query_base + rescore_time + mmap_overhead
-```
+> **per_query_time** = `per_query_base` + `rescore_time` + `mmap_overhead`
 
 ### Step 7b: Calculate Required Cores for QPS
 
-```text
-cores_for_queries = target_QPS x per_query_time_seconds
-```
+> **cores_for_queries** = `target_QPS` x `per_query_time_seconds`
 
 Then add headroom based on latency tier and write pattern:
 
@@ -659,12 +655,7 @@ flowchart TD
 
 ### Step 7d: Total vCPUs
 
-```text
-total_vcpus = cores_for_queries + headroom_cores + write_cores
-
-Round up to the nearest whole number.
-Minimum recommended: 4 vCPUs (to allow OS, Qdrant, and at least 2 query threads).
-```
+> **total_vcpus** = `cores_for_queries` + `headroom_cores` + `write_cores` -- round up to nearest whole number, minimum 4 vCPUs (to allow OS, Qdrant, and at least 2 query threads)
 
 ### Step 7e: Single Node or Multiple?
 
@@ -775,17 +766,10 @@ Set `on_disk: false` for everything that fits in RAM. No write headroom needed i
 
 ### Step 9a: Map Requirements to Instance Type
 
-```text
-From your calculations:
-  - total_vcpus (Stage 7d)
-  - total_ram (Stage 5e)
-  - total_disk (Stage 6d)
-  - disk_type (Stage 6e)
-```
-
 ```mermaid
 flowchart TD
-    Q{"Dominant constraint?"} -->|"total_ram > total_vcpus x 4 GB\n(Memory-bound)"| R["R-series\n(memory-optimized)\n\nAWS: r6i, r7i\nGCP: n2-highmem\nAzure: E-series"]
+    Inputs["From your calculations:\ntotal_vcpus (Stage 7d)\ntotal_ram (Stage 5e)\ntotal_disk (Stage 6d)\ndisk_type (Stage 6e)"] --> Q{"Dominant constraint?"}
+    Q -->|"total_ram > total_vcpus x 4 GB\n(Memory-bound)"| R["R-series\n(memory-optimized)\n\nAWS: r6i, r7i\nGCP: n2-highmem\nAzure: E-series"]
     Q -->|"total_vcpus x 4 GB > total_ram\n(Compute-bound)"| C["C-series\n(compute-optimized)\n\nAWS: c6i, c7i\nGCP: c3\nAzure: F-series"]
     Q -->|"Roughly balanced"| M["M-series\n(general-purpose)\n\nAWS: m6i, m7i\nGCP: n2-standard\nAzure: D-series"]
 
@@ -801,6 +785,7 @@ flowchart TD
     NVMe -->|"YES"| NVMeOpts["Option 1: High-IOPS EBS volume\n(io2 or gp3 w/ provisioned IOPS)\n\nOption 2: NVMe instance family\n(i3, i4i, c6id, m6id, r6id)\n\nDefault: gp3 with 16,000 IOPS provisioned.\nFlag NVMe as benchmark refinement."]
     NVMe -->|"NO"| Done["Proceed to cost estimate"]
 
+    style Inputs fill:#18181b,stroke:#3f3f46,color:#e4e4e7
     style Q fill:#18181b,stroke:#3f3f46,color:#e4e4e7
     style R fill:#1e3a5f,stroke:#3b82f6,color:#93c5fd
     style C fill:#422006,stroke:#f59e0b,color:#fde68a
@@ -816,12 +801,9 @@ flowchart TD
 
 ### Step 9b: Estimate Monthly Cost
 
-```text
-Monthly cost ≈ instance_hourly_rate x 730 hours x num_nodes
-             + disk_gb x disk_price_per_gb_month x num_nodes
+> **monthly_cost** = `instance_hourly_rate` x `730 hours` x `num_nodes` + `disk_gb` x `disk_price_per_gb_month` x `num_nodes`
 
 For reserved instances (1-year commitment): multiply by 0.60-0.70.
-```
 
 | Instance | vCPU | RAM | Hourly Rate | ~Monthly Cost |
 |----------|------|-----|------------|---------------|
@@ -997,4 +979,3 @@ For rapid pattern-matching, here are common scenarios you'll encounter:
 8. **"Cosine distance works for everything"**
    Classical CV features (GIST, SIFT, HOG) use Euclidean (L2) distance. Neural
    embeddings typically use Cosine. Using the wrong metric silently degrades recall.
-   Always check the model documentation.
