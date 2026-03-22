@@ -115,7 +115,7 @@ factor is set later in Stage 3d — do not pick an oversampling value from this 
 ```
                     RELAXED (90-95%)    MODERATE (96-98%)    STRICT (99-100%)
                     ─────────────────   ─────────────────    ─────────────────
-CLASS A             Binary              Binary               Scalar, or
+CLASS A             Scalar              Scalar               Scalar, or
 (binary-friendly)   rescore: ON         rescore: ON          no quantization
                                                              rescore: ON (if scalar)
                     ─────────────────   ─────────────────    ─────────────────
@@ -124,6 +124,14 @@ CLASS B             Scalar              Scalar               No quantization
                     ─────────────────   ─────────────────    ─────────────────
 CLASS C             Scalar (test it)    No quantization      No quantization
 (quant-resistant)   rescore: ON         (full float32)       (full float32)
+
+NOTE on Binary Quantization: For CLASS A embeddings, binary quantization
+offers 32x compression (vs scalar's 4x) and can be effective for high-dim
+neural embeddings. However, expert opinion is split on whether binary is
+reliable enough for production use at top-k >= 50. This guide defaults to
+scalar quantization as the conservative choice. Consider binary quantization
+as a FUTURE OPTIMIZATION after validating scalar meets your requirements —
+especially when RAM savings are critical and top-k is small (< 20).
 ```
 
 **Qdrant quantization_config examples:**
@@ -163,8 +171,7 @@ RECALL REGIME    m     RULE
 RELAXED          16    Fixed. Go to 12 only if memory-constrained
                        after completing Stage 5 and needing to cut.
 MODERATE         20    Fixed.
-STRICT           28    Fixed. Go to 32 only if benchmarks show
-                       recall is still below target after tuning ef.
+STRICT           32    Fixed.
 
 Rarely go above 32 — diminishing returns.
 ```
@@ -180,9 +187,9 @@ You pay this cost once.
 
 RECALL REGIME    ef_construct    RULE
 ─────────────    ────────────    ──────────────────────────────────────
-RELAXED          128             Fixed. (Above Qdrant's default of 100.)
+RELAXED          200             Fixed. (Above Qdrant's default of 100.)
 MODERATE         256             Fixed.
-STRICT           384             Fixed. Go to 512 only if benchmarks
+STRICT           400             Fixed. Go to 512 only if benchmarks
                                  show recall is still below target
                                  after tuning ef.
 
@@ -208,14 +215,16 @@ RELAXED          2x top_k                    Fixed multiplier.
 MODERATE         3x top_k                    Fixed multiplier.
 STRICT           6x top_k                    Fixed multiplier.
 
-Apply floor: hnsw_ef = max(calculated_ef, 64)
-  Very small top_k values (e.g., 10) produce ef values too low for
-  effective graph traversal. The floor ensures a minimum search width.
+Apply floor based on recall regime:
+  RELAXED:   hnsw_ef = max(calculated_ef, 64)
+  MODERATE:  hnsw_ef = max(calculated_ef, 64)
+  STRICT:    hnsw_ef = max(calculated_ef, 128)
 
-  If the floor overrides your multiplier, record the ORIGINAL multiplier
-  (not the floor-adjusted ratio) for use in Stage 7a. Example: if
-  STRICT gives 6x top_k = 60, the floor bumps ef to 64, but you still
-  use the 6x multiplier when looking up the CPU time adjustment.
+The floor ensures a minimum search width. Small top_k values (e.g., 10)
+produce calculated ef values too low for effective graph traversal,
+especially at STRICT recall targets where the graph must be explored
+thoroughly. Use the floor-adjusted ef value (not the calculated value)
+for all subsequent stages including compute estimation in Stage 7a.
 
 NOTE: Qdrant also has full_scan_threshold (default 10000 KB). If a
 segment is smaller than this, Qdrant uses brute-force scan instead of
@@ -249,12 +258,14 @@ If your quantization method is "None," skip this step.
 
 QUANTIZATION     RECALL REGIME    OVERSAMPLING FACTOR
 ────────────     ─────────────    ───────────────────
-Binary           RELAXED          2.0x
-Binary           MODERATE         4.0x
-Binary           STRICT           Not recommended (use scalar or none)
-Scalar           RELAXED          1.5x
+Scalar           RELAXED          2.0x
 Scalar           MODERATE         2.5x
 Scalar           STRICT           4.0x
+
+If exploring binary quantization as a future optimization (see Stage 2 NOTE):
+Binary           RELAXED          3.0x
+Binary           MODERATE         4.0x
+Binary           STRICT           Not recommended (use scalar or none)
 
 rescore_candidates = oversampling_factor x top_k
 These candidates are re-ranked using full-precision vectors.
@@ -375,7 +386,6 @@ original HNSW paper and is a reasonable estimate for sizing purposes.
 Common values (per 1M vectors):
   m=16:  1,000,000 x 256 x 1.1 ≈ 282 MB
   m=20:  1,000,000 x 320 x 1.1 ≈ 352 MB
-  m=28:  1,000,000 x 448 x 1.1 ≈ 493 MB
   m=32:  1,000,000 x 512 x 1.1 ≈ 563 MB
 ```
 
@@ -601,8 +611,21 @@ per_query_time = per_query_base + rescore_time + mmap_overhead
 ```
 cores_for_queries = target_QPS x per_query_time_seconds
 
-Then add headroom:
-  headroom_cores = cores_for_queries x 0.30
+Then add headroom based on latency tier and write pattern:
+
+  If TIGHT latency tier AND STREAMING writes:
+    headroom_cores = cores_for_queries x 1.0  (100% headroom)
+    (Streaming writes cause segment merges and lock contention that
+    amplify tail latency. The tight P99 budget leaves no room for
+    write-induced spikes. This is the single largest source of
+    expert variance — production systems consistently need more
+    headroom here than steady-state math suggests.)
+
+  If TIGHT latency tier AND BATCH/STATIC writes:
+    headroom_cores = cores_for_queries x 0.50  (50% headroom)
+
+  Otherwise (MODERATE, RELAXED, ULTRA-TIGHT):
+    headroom_cores = cores_for_queries x 0.30  (30% headroom)
 
 This headroom covers: GC pauses, OS scheduling, background tasks,
 and the gap between average and P99 query times.
@@ -638,14 +661,19 @@ Minimum recommended: 4 vCPUs (to allow OS, Qdrant, and at least 2 query threads)
 Does total_vcpus fit in a single available machine (typically max 64-96 vCPUs)?
 AND does total_ram (from Stage 5) fit in a single available machine?
 │
-├─ YES to both ──► Single node. Proceed.
+├─ YES to both ──► Single node. This is the default.
 │                  Record: nodes=1, shards=1, replicas=1.
 │
-│                  NOTE on high availability (HA):
-│                  If the P99 SLA is contractual (not best-effort), add 1 replica
-│                  on a second node for failover. This doubles infrastructure cost
-│                  but prevents SLA breach during node failure. Record this as a
-│                  decision for the customer, not a default.
+│                  Topology is a CUSTOMER DECISION, not a sizing decision.
+│                  The purpose of this guide is to determine the minimum viable
+│                  infrastructure. Replication is a business/SLA decision that
+│                  the customer makes after reviewing your initial architecture.
+│
+│                  Present to the customer as a recommendation:
+│                  "HA option: add 1 replica (replication_factor=2) for failover.
+│                  This doubles infrastructure cost but prevents SLA breach
+│                  during node failure. Recommended if the P99 SLA is contractual."
+│                  Record under "Future Optimizations" in the summary template.
 │
 │                  NOTE on bursty QPS:
 │                  If peak QPS occurs in a defined window (e.g., 6 hours/day),
@@ -893,19 +921,20 @@ For rapid pattern-matching, here are common scenarios you'll encounter:
 ### Archetype 1: "High-dim text search, good-enough recall"
 - OpenAI / Cohere / BGE embeddings, 1536-4096 dims
 - 95% recall, <100ms latency, moderate QPS
-- **Recipe**: Binary quantization, m=16, ef=2x top_k, mmap full vectors on NVMe
-- **Cost profile**: Very low RAM (quantized vectors are tiny), moderate disk
+- **Recipe**: Scalar quantization, m=16, ef=2x top_k, oversample 2x, mmap full vectors on NVMe
+- **Cost profile**: Low RAM (quantized vectors are 4x smaller), moderate disk
+- **Future optimization**: Test binary quantization for 32x compression if RAM is critical
 
 ### Archetype 2: "High-dim text search, strict recall"
 - Same embeddings as above
 - 99% recall, <100ms latency
-- **Recipe**: Scalar quantization (binary too lossy at 99%), m=28, ef=6x top_k, oversample 4x
+- **Recipe**: Scalar quantization, m=32, ef=6x top_k, oversample 4x
 - **Cost profile**: Moderate RAM, moderate disk
 
 ### Archetype 3: "Low-dim features, strict recall"
 - CV features, scientific embeddings, 128-960 dims
 - 99% recall
-- **Recipe**: No quantization (full float32 in RAM), m=28, ef=6x top_k, Euclidean distance
+- **Recipe**: No quantization (full float32 in RAM), m=32, ef=6x top_k, Euclidean distance
 - **Cost profile**: High RAM per vector (no compression), CPU-heavy if high QPS
 
 ### Archetype 4: "Massive scale, relaxed latency"
