@@ -43,61 +43,36 @@ The guide assumes you already know:
 This determines your quantization options (the single biggest cost lever) and your
 distance metric.
 
+```mermaid
+flowchart TD
+    Start["What produced your embeddings?"] --> NT["Neural text model\n(OpenAI, Cohere, BGE, E5)"]
+    Start --> NV["Neural vision model\n(CLIP, DINOv2)"]
+    Start --> CV["Classical CV features\n(GIST, SIFT, HOG)"]
+    Start --> Other["Other / Unknown"]
+
+    NT --> DimCheck{"Dimensions >= 1024?"}
+    DimCheck -->|Yes| ClassA["CLASS A\nBinary-friendly neural"]
+    DimCheck -->|No| ClassB1["CLASS B\nScalar-friendly neural"]
+
+    NV --> ClassB2["CLASS B\nScalar-friendly neural"]
+    CV --> ClassC["CLASS C\nQuantization-resistant"]
+    Other --> ClassB3["CLASS B\n(default assumption)"]
+
+    style ClassA fill:#1e3a5f,stroke:#3b82f6,color:#93c5fd
+    style ClassB1 fill:#1e3a5f,stroke:#3b82f6,color:#93c5fd
+    style ClassB2 fill:#1e3a5f,stroke:#3b82f6,color:#93c5fd
+    style ClassB3 fill:#1e3a5f,stroke:#3b82f6,color:#93c5fd
+    style ClassC fill:#3b1f1f,stroke:#ef4444,color:#fca5a5
+    style Start fill:#18181b,stroke:#3f3f46,color:#e4e4e7
 ```
-What produced your embeddings?
-│
-├─ Neural text model (OpenAI, Cohere, BGE, E5, etc.)
-│  Dimensions typically: 768 - 4096
-│  Properties: centered near zero, well-distributed, high intrinsic dimensionality
-│  Distance metric: Cosine
-│    Qdrant parameter: distance = "Cosine"
-│    (Qdrant auto-normalizes vectors at upload time and uses Dot internally)
-│    Alternative: use "Dot" if your model was trained with dot-product objective.
-│  │
-│  └─ Are dimensions >= 1024?
-│     ├─ YES ──► EMBEDDING CLASS A: "Binary-friendly neural"
-│     │          All quantization strategies available.
-│     │          Binary quantization is viable and dramatically reduces cost.
-│     │
-│     │          NOTE: Some models (e.g., OpenAI text-embedding-3-large) support
-│     │          Matryoshka dimension reduction. If the model supports truncating
-│     │          to fewer dimensions (e.g., 3072 → 1536) with acceptable quality
-│     │          loss, this can halve memory and improve latency. Test truncation
-│     │          against your recall target before committing to full dimensions.
-│     │
-│     └─ NO ───► EMBEDDING CLASS B: "Scalar-friendly neural"
-│                Binary may lose too much signal.
-│                Scalar quantization is your best compression tool.
-│
-├─ Neural vision model (CLIP, DINOv2, etc.)
-│  Dimensions typically: 512 - 1024
-│  Properties: often well-distributed but may have non-negative activations
-│  Distance metric: Cosine (typical for CLIP-family; verify with model docs)
-│    Qdrant parameter: distance = "Cosine"
-│  │
-│  └──────────► EMBEDDING CLASS B: "Scalar-friendly neural"
-│               Test binary empirically; don't assume it works.
-│
-├─ Classical CV features (GIST, SIFT, HOG, etc.)
-│  Dimensions typically: 128 - 960
-│  Properties: non-negative, magnitude-heavy, not centered at zero
-│  Distance metric: Euclidean (L2). These are NOT normalized embeddings.
-│                   Using Cosine on non-normalized features gives wrong results.
-│    Qdrant parameter: distance = "Euclid"
-│    (Qdrant also supports "Manhattan" for L1 distance if needed)
-│  │
-│  └──────────► EMBEDDING CLASS C: "Quantization-resistant"
-│               Scalar quantization with caution. Binary likely fails.
-│               May need full float32 in RAM for high recall.
-│
-└─ Other / Unknown
-   │
-   Distance metric: Check model documentation. Default to Cosine if unknown.
-   Qdrant supports: "Cosine", "Euclid", "Dot", "Manhattan"
-   └──────────► EMBEDDING CLASS B (default assumption)
-                Benchmark scalar quantization; fall back to no quantization
-                if recall targets can't be met.
-```
+
+**Embedding class details:**
+
+| Class | Type | Distance Metric | Qdrant `distance` | Properties |
+|-------|------|----------------|-------------------|------------|
+| **A** | Neural text, dims >= 1024 | Cosine | `"Cosine"` | Centered near zero, well-distributed. All quantization strategies viable. Binary quantization dramatically reduces cost. _Some models (e.g., OpenAI text-embedding-3-large) support Matryoshka dimension reduction — test truncation against recall target._ |
+| **B** | Neural text (dims < 1024), neural vision, or unknown | Cosine | `"Cosine"` | Binary may lose signal. Scalar quantization is the best compression tool. For vision models, verify distance metric with model docs. Alternative: use `"Dot"` if model was trained with dot-product objective. |
+| **C** | Classical CV features (GIST, SIFT, HOG) | Euclidean (L2) | `"Euclid"` | Non-negative, magnitude-heavy, not centered at zero. Quantization-resistant. May need full float32 in RAM for high recall. Using Cosine on non-normalized features gives wrong results. Qdrant also supports `"Manhattan"` for L1. |
 
 **Record: your Embedding Class and your Distance Metric (Qdrant `distance` value).**
 
@@ -108,27 +83,23 @@ What produced your embeddings?
 This determines how hard the algorithm has to work and how much precision you need
 in your distance calculations.
 
-```
-What is your recall target?
-│
-├─ 90-95% ────► RECALL REGIME: RELAXED
-│               Aggressive quantization is viable.
-│               Lower HNSW parameters acceptable.
-│               Oversampling + rescoring can cover the gap.
-│
-├─ 96-98% ────► RECALL REGIME: MODERATE
-│               Quantization possible but needs careful tuning.
-│               Moderate HNSW parameters.
-│               Oversampling required if quantizing.
-│
-└─ 99-100% ───► RECALL REGIME: STRICT
-                Quantization may be infeasible (depends on embedding class).
-                High HNSW parameters (m, ef_construct, ef).
-                May need full-precision vectors in RAM.
+```mermaid
+flowchart LR
+    Start["Recall target?"] --> R["90-95%\nRELAXED"]
+    Start --> M["96-98%\nMODERATE"]
+    Start --> S["99-100%\nSTRICT"]
 
-Boundary rule: 95% is RELAXED. 96% is MODERATE. 99% is STRICT.
-Each threshold is inclusive to the tier above it.
+    R --> RD["Aggressive quantization viable\nLower HNSW parameters OK\nOversampling + rescoring covers the gap"]
+    M --> MD["Quantization needs careful tuning\nModerate HNSW parameters\nOversampling required if quantizing"]
+    S --> SD["Quantization may be infeasible\nHigh HNSW parameters\nMay need full float32 in RAM"]
+
+    style R fill:#14532d,stroke:#22c55e,color:#86efac
+    style M fill:#422006,stroke:#f59e0b,color:#fde68a
+    style S fill:#3b1f1f,stroke:#ef4444,color:#fca5a5
+    style Start fill:#18181b,stroke:#3f3f46,color:#e4e4e7
 ```
+
+**Boundary rule:** 95% is RELAXED. 96% is MODERATE. 99% is STRICT.
 
 ### Quantization Feasibility Matrix
 
@@ -310,35 +281,26 @@ These candidates are re-ranked using full-precision vectors.
 
 This determines what can live on disk vs. what must be in RAM.
 
-```
-What is your P99 latency SLA?
-│
-├─ < 20ms ─────► LATENCY TIER: ULTRA-TIGHT
-│                Everything in RAM: HNSW index, quantized vectors, full vectors.
-│                No mmap. NVMe only as backup.
-│                Consider: is this SLA realistic for your recall target?
-│
-├─ 20-99ms ────► LATENCY TIER: TIGHT
-│                HNSW index + quantized vectors: RAM (mandatory)
-│                Full vectors for rescoring: NVMe SSD via mmap (OK)
-│                ~100us per disk read is acceptable within budget.
-│                Disk IOPS become critical if rescoring many candidates.
-│
-├─ 100-500ms ──► LATENCY TIER: MODERATE
-│                HNSW index: RAM (always)
-│                Quantized vectors: RAM preferred, mmap acceptable
-│                Full vectors: see Storage Placement Table below
-│
-└─ > 500ms ────► LATENCY TIER: RELAXED
-                 HNSW index: RAM (always, non-negotiable)
-                 Everything else: mmap from SSD is fine.
-                 Budget allows for very thorough graph traversal.
-                 Good for batch/offline workloads.
+```mermaid
+flowchart LR
+    Start["P99 latency SLA?"] --> UT["< 20ms\nULTRA-TIGHT"]
+    Start --> T["20-99ms\nTIGHT"]
+    Start --> MO["100-500ms\nMODERATE"]
+    Start --> RE["> 500ms\nRELAXED"]
 
-Boundary rule: exact boundary values belong to the lower tier.
-20ms = TIGHT (not ULTRA-TIGHT). 100ms = MODERATE (not TIGHT).
-500ms = MODERATE (not RELAXED).
+    UT --> UTD["Everything in RAM\nNo mmap\nIs this SLA realistic?"]
+    T --> TD["HNSW + quant vectors: RAM\nFull vectors: mmap OK\nDisk IOPS critical"]
+    MO --> MOD["HNSW: RAM always\nQuant vectors: RAM preferred\nFull vectors: see table below"]
+    RE --> RED["HNSW: RAM always\nEverything else: mmap OK\nGood for batch/offline"]
+
+    style UT fill:#3b1f1f,stroke:#ef4444,color:#fca5a5
+    style T fill:#422006,stroke:#f59e0b,color:#fde68a
+    style MO fill:#14532d,stroke:#22c55e,color:#86efac
+    style RE fill:#1e3a5f,stroke:#3b82f6,color:#93c5fd
+    style Start fill:#18181b,stroke:#3f3f46,color:#e4e4e7
 ```
+
+**Boundary rule:** exact boundary values belong to the lower tier. 20ms = TIGHT. 100ms = MODERATE. 500ms = MODERATE.
 
 ### Storage Placement Decision Table
 
@@ -739,70 +701,58 @@ Qdrant collection creation parameters for topology:
 
 ## Stage 8: Tune for Write Pattern
 
+```mermaid
+flowchart TD
+    Start["Write pattern?"] --> S["STREAMING\nContinuous writes\nconcurrent with reads"]
+    Start --> B["BATCH\nPeriodic bulk loads\nno concurrent reads"]
+    Start --> R["RARE / STATIC\nLoad once, mostly read"]
+
+    S --> SLow{"Write rate?"}
+    SLow -->|"< 500/s"| SStd["Standard config\nDefault segments OK"]
+    SLow -->|"> 500/s"| SOpt["Optimize throughput\nIncrease WAL capacity"]
+
+    B --> BIdx["Disable indexing during load\nRebuild after"]
+    B --> BAlias["Consider collection aliasing\nfor zero-downtime swaps"]
+
+    R --> RRead["Optimize for reads\nCompact segments\non_disk: false"]
+
+    style S fill:#1e3a5f,stroke:#3b82f6,color:#93c5fd
+    style B fill:#422006,stroke:#f59e0b,color:#fde68a
+    style R fill:#14532d,stroke:#22c55e,color:#86efac
+    style Start fill:#18181b,stroke:#3f3f46,color:#e4e4e7
 ```
-What is your write pattern?
-│
-├─ STREAMING (continuous writes, concurrent with reads)
-│  │
-│  ├─ Write rate < 500/s ──► Standard configuration
-│  │  - Default segment sizes are fine
-│  │  - Qdrant handles background merging automatically via three optimizers:
-│  │      Merge Optimizer: combines small segments (controlled by default_segment_number)
-│  │      Vacuum Optimizer: reclaims deleted records (controlled by deleted_threshold)
-│  │      Indexing Optimizer: promotes segments to HNSW + mmap (controlled by
-│  │        indexing_threshold and memmap_threshold)
-│  │  - CPU headroom was already included in Stage 7d
-│  │  - Key Qdrant config: optimizers_config.flush_interval_sec (default: 5)
-│  │    controls how often WAL is flushed to segments
-│  │
-│  └─ Write rate > 500/s ──► Optimize for write throughput
-│     - Increase WAL capacity (wal.wal_capacity_mb, default 32)
-│     - Increase wal.wal_segments_ahead for write buffering
-│     - Consider larger memmap_threshold to batch more in memory
-│     - Monitor segment count (too many small segments hurts read perf)
-│     - May need dedicated write cores (add to Stage 7 calculation)
-│
-├─ BATCH (periodic bulk loads, no concurrent reads)
-│  │
-│  │  "No concurrent reads" means no queries are served during the write
-│  │  window. This is functionally equivalent to "offline during load"
-│  │  for optimization purposes.
-│  │
-│  ├─► Recommended: disable indexing during load, rebuild after
-│  │   - PREFERRED: set hnsw_config.m = 0 at collection creation to disable
-│  │     HNSW graph construction entirely during bulk load. After loading,
-│  │     update the collection to set m to your target value — Qdrant will
-│  │     rebuild the HNSW index automatically.
-│  │   - ALTERNATIVE: set optimizers_config.indexing_threshold = 0 to defer
-│  │     indexing. (NOTE: 0 = disabled. Higher values = larger segments before
-│  │     indexing triggers. This is the opposite of what you might expect.)
-│  │   - Bulk insert all vectors
-│  │   - Trigger index rebuild (by updating hnsw_config.m or indexing_threshold)
-│  │   - Set max_optimization_threads high during rebuild (Qdrant config param;
-│  │     null = dynamic CPU saturation, which is ideal when no queries run)
-│  │   - Much faster than incremental indexing
-│  │
-│  ├─► Consider collection aliasing for zero-downtime reindexing:
-│  │   - Build a NEW collection with the batch data
-│  │   - Swap the alias atomically when ready:
-│  │       POST /collections/aliases
-│  │       {"actions": [
-│  │         {"delete_alias": {"alias_name": "production"}},
-│  │         {"create_alias": {"collection_name": "new_v2", "alias_name": "production"}}
-│  │       ]}
-│  │     (Multiple actions in one request are executed atomically)
-│  │   - Enables rollback to the previous collection if something is wrong
-│  │   - Eliminates any risk of serving partially-indexed data
-│  │
-│  └─► Disk was already sized for batch in Stage 6b.
-│
-└─ RARE / STATIC (load once, mostly read)
-   │
-   └──────────► Optimize entirely for reads
-                - Compact segments after initial load
-                - Consider on_disk: false for everything that fits in RAM
-                - No write headroom needed in CPU calculation
+
+**STREAMING (< 500/s):** Standard configuration. Qdrant handles background merging
+automatically via three optimizers: Merge (combines small segments), Vacuum (reclaims
+deleted records), and Indexing (promotes segments to HNSW + mmap). Key config:
+`optimizers_config.flush_interval_sec` (default: 5).
+
+**STREAMING (> 500/s):** Increase WAL capacity (`wal.wal_capacity_mb`, default 32),
+increase `wal.wal_segments_ahead` for write buffering, consider larger `memmap_threshold`.
+Monitor segment count — too many small segments hurts read performance.
+
+**BATCH:** "No concurrent reads" is functionally equivalent to "offline during load."
+
+- **Preferred:** Set `hnsw_config.m = 0` at collection creation to disable HNSW graph
+  construction during bulk load. After loading, update the collection to set m to your
+  target value — Qdrant rebuilds the HNSW index automatically.
+- **Alternative:** Set `optimizers_config.indexing_threshold = 0` to defer indexing.
+  (NOTE: 0 = disabled. This is the opposite of what you might expect.)
+- Set `max_optimization_threads` high during rebuild (null = dynamic CPU saturation).
+- Consider **collection aliasing** for zero-downtime reindexing:
+
+```json
+POST /collections/aliases
+{"actions": [
+  {"delete_alias": {"alias_name": "production"}},
+  {"create_alias": {"collection_name": "new_v2", "alias_name": "production"}}
+]}
 ```
+
+Multiple actions in one request are executed atomically. Enables rollback.
+
+**RARE / STATIC:** Optimize entirely for reads. Compact segments after initial load.
+Set `on_disk: false` for everything that fits in RAM. No write headroom needed in CPU.
 
 ---
 

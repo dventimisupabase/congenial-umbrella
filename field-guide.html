@@ -263,6 +263,22 @@
     overflow-wrap: normal;
   }
 
+  /* Mermaid diagrams */
+  .content .mermaid {
+    background: var(--bg-code);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.5rem 1rem;
+    margin: 0 0 1.25rem;
+    overflow-x: auto;
+    text-align: center;
+  }
+
+  .content .mermaid svg {
+    max-width: 100%;
+    height: auto;
+  }
+
   /* Scroll-to-top */
   .scroll-top {
     position: fixed;
@@ -374,6 +390,7 @@
 <button class="scroll-top" id="scrollTop" aria-label="Scroll to top">&#8593;</button>
 
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
 <script>
 (async function() {
   // Fetch the markdown source of truth
@@ -385,15 +402,51 @@
   }
   const md = await res.text();
 
-  // Configure marked
+  // Initialize mermaid with dark theme
+  mermaid.initialize({
+    startOnLoad: false,
+    theme: 'dark',
+    themeVariables: {
+      primaryColor: '#1e3a5f',
+      primaryTextColor: '#e4e4e7',
+      primaryBorderColor: '#3b82f6',
+      lineColor: '#3f3f46',
+      secondaryColor: '#27272a',
+      tertiaryColor: '#18181b',
+      background: '#09090b',
+      mainBkg: '#18181b',
+      nodeBorder: '#3f3f46',
+      clusterBkg: '#18181b',
+      clusterBorder: '#3f3f46',
+      titleColor: '#e4e4e7',
+      edgeLabelBackground: '#18181b',
+      fontSize: '14px',
+    },
+    flowchart: { curve: 'basis', padding: 16 },
+  });
+
+  // Configure marked — custom renderer for mermaid fenced blocks
+  const renderer = new marked.Renderer();
+  const origCode = renderer.code;
+  renderer.code = function({ text, lang }) {
+    if (lang === 'mermaid') {
+      return `<div class="mermaid">${text}</div>`;
+    }
+    return `<pre><code class="language-${lang || ''}">${text.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</code></pre>`;
+  };
+
   marked.setOptions({
     gfm: true,
     breaks: false,
+    renderer,
   });
 
   // Render markdown to HTML
   const html = marked.parse(md);
   document.getElementById('content').innerHTML = html;
+
+  // Render mermaid diagrams
+  await mermaid.run({ querySelector: '.mermaid' });
 
   // Build table of contents from rendered headings
   buildTOC();
