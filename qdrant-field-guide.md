@@ -101,11 +101,89 @@ CLASS C             Scalar (test it)    No quantization      No quantization
 (quant-resistant)   rescore: ON         (full float32)       (full float32)
 ```
 
-**Record your quantization strategy. You'll need it for memory math in Stage 4.**
+**Record your quantization strategy. You'll need it for memory and compute math later.**
 
 ---
 
-## Stage 3: Assess Your Latency Budget
+## Stage 3: Set HNSW Parameters
+
+You need these values before you can size memory or compute, so set them now.
+
+### Step 3a: Choose m
+
+```
+RECALL REGIME    RECOMMENDED m    RULE
+─────────────    ─────────────    ─────────────────────────────────────────
+RELAXED          16               Use 16. Go to 12 only if memory-constrained
+                                  after completing Stage 4 and needing to cut.
+MODERATE         20               Use 20. Midpoint of range.
+STRICT           28               Use 28. Midpoint of range (24-32).
+
+Rarely go above 32 — diminishing returns.
+```
+
+### Step 3b: Choose ef_construct
+
+```
+ef_construct only affects index build time, not query time or RAM.
+You pay this cost once. Use the high end of the range.
+
+RECALL REGIME    ef_construct     RULE
+─────────────    ────────────     ──────────────────────────────────
+RELAXED          128              Fixed value — no range to decide.
+MODERATE         256              Use the top of the 200-256 range.
+                                  Build time is a one-time cost.
+STRICT           384              Use the midpoint of 256-512.
+                                  Go to 512 only if benchmarks show
+                                  recall is still below target after
+                                  tuning ef in Stage 5.
+```
+
+### Step 3c: Choose ef (search-time) — PRELIMINARY
+
+Set a starting value now for compute estimation. You will refine this during
+benchmarking.
+
+```
+ef must be >= top_k (hard constraint)
+
+RECALL REGIME    STARTING ef                 RULE
+─────────────    ──────────────────────────  ──────────────────────────
+RELAXED          2x top_k                    Use the low end. Sufficient
+                                             for 90-95% recall in most cases.
+MODERATE         3x top_k                    Midpoint of 2-4x range.
+STRICT           6x top_k                    Midpoint of 4-8x range.
+
+Apply floor: ef = max(ef, 64) — very small top_k values (e.g. 10)
+produce ef values too low for effective graph traversal.
+
+ef is your primary runtime tuning knob. After benchmarking:
+  - If recall is below target: increase ef.
+  - If latency is above SLA: decrease ef (and accept lower recall,
+    or improve quantization/graph quality instead).
+```
+
+### Step 3d: Choose Oversampling (if quantizing)
+
+```
+Only applies when using quantization + rescoring.
+
+QUANTIZATION     RECALL REGIME    OVERSAMPLING FACTOR
+────────────     ─────────────    ───────────────────
+Binary           RELAXED          2.0x  (top of 1.5-2.0 range — binary is lossy)
+Binary           MODERATE         4.0x  (midpoint of 3.0-5.0)
+Binary           STRICT           Not recommended (use scalar or none)
+Scalar           RELAXED          1.5x  (top of 1.0-1.5)
+Scalar           MODERATE         2.5x  (midpoint of 2.0-3.0)
+Scalar           STRICT           4.0x  (midpoint of 3.0-5.0, may not suffice)
+
+rescore_candidates = oversampling_factor x top_k
+These candidates are re-ranked using full-precision vectors.
+```
+
+---
+
+## Stage 4: Assess Your Latency Budget
 
 This determines what can live on disk vs. what must be in RAM.
 
@@ -126,8 +204,7 @@ What is your P99 latency SLA?
 ├─ 100-500ms ─► LATENCY TIER: MODERATE
 │               HNSW index: RAM (always)
 │               Quantized vectors: RAM preferred, mmap acceptable
-│               Full vectors: disk (mmap) is fine
-│               More room for higher ef values and larger oversample.
+│               Full vectors: see decision rule below
 │
 └─ > 500ms ───► LATENCY TIER: RELAXED
                 HNSW index: RAM (always, non-negotiable)
@@ -138,24 +215,32 @@ What is your P99 latency SLA?
 
 ### Storage Placement Decision Table
 
-Cross-reference Latency Tier with your components:
+Cross-reference Latency Tier with your components. **If your quantization strategy
+from Stage 2 is "no quantization," there are no separate quantized vectors — the full
+vectors ARE the search vectors, and every distance calculation reads them. In this
+case, promote full vectors one tier toward RAM** (marked with * below).
 
 ```
-Component          ULTRA-TIGHT    TIGHT          MODERATE       RELAXED
-──────────────     ───────────    ─────          ────────       ───────
-HNSW index         RAM            RAM            RAM            RAM
-Quantized vectors  RAM            RAM            RAM or mmap    mmap OK
-Full vectors       RAM            mmap (NVMe)    mmap (SSD)     mmap (SSD)
-Payload/metadata   RAM            RAM or mmap    mmap           mmap
+Component          ULTRA-TIGHT    TIGHT          MODERATE         RELAXED
+──────────────     ───────────    ─────          ────────         ───────
+HNSW index         RAM            RAM            RAM              RAM
+Quantized vectors  RAM            RAM            RAM or mmap      mmap OK
+Full vectors       RAM            mmap (NVMe)    mmap (SSD)       mmap (SSD)
+  *if no quant:    RAM            RAM            RAM preferred*   mmap (SSD)
+Payload/metadata   RAM            RAM or mmap    mmap             mmap
+
+* = When there is no quantization layer, every search query reads full vectors
+    directly. mmap adds per-query I/O latency that compounds with high ef values.
+    Promoting to RAM avoids this. If RAM is too expensive, mmap is still viable
+    under MODERATE/RELAXED latency tiers — just account for the I/O cost in your
+    per-query time estimate (add ~0.5-1ms for mmap access patterns under load).
 ```
 
 ---
 
-## Stage 4: Size Your Memory
+## Stage 5: Size Your Memory
 
-Now you have everything needed to calculate RAM requirements.
-
-### Step 4a: Vector Memory
+### Step 5a: Vector Memory
 
 ```
 Pick your quantization strategy from Stage 2 and calculate:
@@ -172,23 +257,30 @@ BINARY QUANTIZATION (1-bit):
   full_vector_memory = num_vectors x dimensions x 4 bytes  (for rescore, may be on disk)
 ```
 
-### Step 4b: HNSW Index Memory
+### Step 5b: HNSW Index Memory
 
 ```
+Use the m value you chose in Stage 3, Step 3a.
+
 hnsw_memory = num_vectors x m x 2 x 8 bytes
 
 Common values:
   m=16:  num_vectors x 256 bytes
-  m=24:  num_vectors x 384 bytes
+  m=20:  num_vectors x 320 bytes
+  m=28:  num_vectors x 448 bytes
   m=32:  num_vectors x 512 bytes
 ```
 
-### Step 4c: Overhead
+### Step 5c: Total RAM
 
 ```
-overhead = (vector_memory + hnsw_memory) x 0.20
+Based on your Storage Placement from Stage 4, sum the components assigned to RAM:
 
-This covers:
+total_ram_components = sum of (components placed in RAM from Stage 4 table)
+overhead = total_ram_components x 0.20
+total_ram = total_ram_components + overhead
+
+The overhead covers:
   - Payload storage (metadata per vector)
   - Internal data structures (segment maps, id maps)
   - OS page cache / filesystem buffers
@@ -196,46 +288,60 @@ This covers:
   - Temporary memory during segment merges
 ```
 
-### Step 4d: Total RAM
+---
+
+## Stage 6: Size Your Disk
+
+Disk is sized separately from RAM. Everything persists to disk regardless of whether
+it's also in RAM (Qdrant uses disk as the durable backing store).
+
+### Step 6a: Base Disk
 
 ```
-Based on your Storage Placement from Stage 3:
+base_disk = full_vector_memory + quantized_memory + hnsw_on_disk
 
-total_ram = sum of components assigned to RAM + overhead
-
-If TIGHT latency:
-  total_ram = hnsw_memory + quantized_memory + overhead
-  (full vectors on disk, need fast SSD)
-
-If ULTRA-TIGHT:
-  total_ram = hnsw_memory + quantized_memory + full_vector_memory + overhead
-
-If MODERATE/RELAXED:
-  total_ram = hnsw_memory + overhead  (minimum)
-  (add quantized_memory to RAM for better performance)
+Where:
+  full_vector_memory = num_vectors x dimensions x 4 bytes  (always stored on disk)
+  quantized_memory   = size of quantized vectors (0 if no quantization)
+  hnsw_on_disk       = hnsw_memory (index is persisted to disk even if loaded into RAM)
 ```
 
-### Step 4e: Disk Sizing
+### Step 6b: WAL (Write-Ahead Log) Space
 
 ```
-disk_needed = full_vector_memory + quantized_memory + hnsw_memory + wal_space
+WAL accumulates writes before they're flushed to segments.
 
-wal_space = estimated_daily_writes x avg_vector_size x 2
-  (WAL segments before compaction; factor of 2 for safety)
+STREAMING writes:
+  wal_space = write_rate_per_second x avg_vector_bytes x wal_flush_interval_seconds x 2
+  Default wal_flush_interval is ~1 second, but segments may not merge immediately.
+  Rule of thumb: wal_space = 2 GB (sufficient for most streaming workloads up to 500/s)
 
-Add 30-50% headroom for:
-  - Segment merge operations (temporarily doubles space)
-  - WAL accumulation during peak writes
-  - Snapshot storage
+BATCH writes:
+  wal_space = batch_size x avg_vector_bytes x 2
+  The x2 accounts for WAL segments coexisting before compaction.
+
+RARE/STATIC writes:
+  wal_space = 1 GB (minimal, just for operational headroom)
+```
+
+### Step 6c: Total Disk
+
+```
+total_disk = (base_disk + wal_space) x 1.5
+
+The 1.5x multiplier covers:
+  - Segment merge operations (old + new segments coexist temporarily)
+  - Snapshot storage (if enabled)
+  - OS filesystem overhead
 ```
 
 ---
 
-## Stage 5: Size Your Compute (vCPUs)
+## Stage 7: Size Your Compute (vCPUs)
 
-### Step 5a: Estimate Per-Query CPU Time
+### Step 7a: Estimate Per-Query CPU Time
 
-This varies with ef, dimensions, and quantization. Use these rough baselines:
+This varies with ef, dimensions, and quantization. Use these baselines:
 
 ```
                         Binary quant    Scalar quant    No quant (float32)
@@ -246,37 +352,43 @@ dims 1024-2048          ~2ms            ~4ms            ~8ms
 dims 2048-4096          ~2.5ms          ~5ms            ~12ms
 
 These assume:
-  - ef = 2x top_k (adjust up for higher recall)
+  - ef = 2x top_k
   - Includes rescoring time if quantized
   - Warm cache (data in RAM or OS page cache)
   - Single-threaded per query
 
-Adjustments:
-  - For ef = 4x top_k: multiply by 1.5
-  - For ef = 8x top_k: multiply by 2.5
-  - Add ~0.5ms per 100 rescore candidates if rescoring from disk
+Adjustments for ef (use the ef value from Stage 3, Step 3c):
+  - ef = 2x top_k: no adjustment (baseline)
+  - ef = 3x top_k: multiply by 1.25
+  - ef = 4x top_k: multiply by 1.5
+  - ef = 6x top_k: multiply by 2.0
+  - ef = 8x top_k: multiply by 2.5
+
+Additional adjustments:
+  - If rescoring from disk (mmap): add ~0.5ms per 100 rescore candidates
+  - If full vectors on mmap with no quantization: add ~1ms (random I/O during search)
 ```
 
-### Step 5b: Calculate Required Cores for QPS
+### Step 7b: Calculate Required Cores for QPS
 
 ```
 cores_for_queries = target_QPS x per_query_cpu_seconds
-
-Example: 3000 QPS x 0.005s = 15 cores
 
 Then add headroom:
   cores_total = cores_for_queries x 1.3  (30% headroom for GC, OS, background tasks)
 ```
 
-### Step 5c: Account for Write Load
+### Step 7c: Account for Write Load
 
 ```
-If concurrent reads + writes:
+If concurrent reads + writes (STREAMING pattern):
   write_cores = write_QPS x indexing_time_per_vector
 
   Indexing time per vector (rough):
     - Simple append: ~0.1ms
     - HNSW insertion with m=16: ~1-2ms
+    - HNSW insertion with m=20: ~2-3ms
+    - HNSW insertion with m=28: ~3-4ms
     - HNSW insertion with m=32: ~3-5ms
 
   cores_total = (cores_for_queries + write_cores) x 1.3
@@ -286,94 +398,40 @@ If batch writes (no concurrent reads):
   Writes use the same cores during off-peak.
 ```
 
-### Step 5d: Single Node or Multiple?
+### Step 7d: Single Node or Multiple?
 
 ```
-Is cores_total <= 64?
-├─ YES ──► Single node likely sufficient
-│          Verify total_ram fits in one machine
+Does cores_total fit in a single machine AND does total_ram fit?
 │
-└─ NO ───► Consider:
-           ├─ Replicas: copies of the same data, distribute read QPS
-           │  Good when: high QPS is the bottleneck, data fits in one node's RAM
-           │  num_replicas = ceil(cores_total / cores_per_node)
-           │
-           └─ Shards: partition data across nodes
-              Good when: data doesn't fit in one node's RAM
-              num_shards = ceil(total_ram / ram_per_node)
-              Note: each query must hit all shards, adding latency
+├─ YES to both ──► Single node is viable.
+│  │
+│  └─ Is the QPS bursty (e.g., peak window < 24h)?
+│     ├─ YES ──► Single node is still the default recommendation.
+│     │          Note: replicas could allow scaling down off-peak,
+│     │          but this is a cost optimization to explore AFTER
+│     │          validating the architecture works. Do not introduce
+│     │          replicas at initial design stage unless the single
+│     │          node option is clearly wasteful (>50% idle time at
+│     │          sustained cost). Flag it as a future optimization.
+│     │
+│     └─ NO ───► Single node. Proceed.
+│
+└─ NO to either ──► You need multiple nodes.
+   │
+   ├─ RAM is the bottleneck (data doesn't fit in one node)?
+   │  └─► Shards: partition data across nodes
+   │      num_shards = ceil(total_ram / max_ram_per_node)
+   │      Note: each query hits all shards, adding latency.
+   │
+   └─ CPU is the bottleneck (QPS too high for one node)?
+      └─► Replicas: full copies of data, distribute QPS
+          num_replicas = ceil(cores_total / max_cores_per_node)
+          Each replica needs total_ram, so total cost = replicas x node_cost.
 ```
 
 ---
 
-## Stage 6: Set HNSW Parameters
-
-### Step 6a: Choose m
-
-```
-RECALL REGIME    RECOMMENDED m    MEMORY IMPACT (per 1M vectors)
-─────────────    ─────────────    ─────────────────────────────
-RELAXED          12-16            192-256 MB
-MODERATE         16-24            256-384 MB
-STRICT           24-32            384-512 MB
-
-Higher m = better recall, more memory, slower indexing.
-Rarely go above 32 — diminishing returns.
-```
-
-### Step 6b: Choose ef_construct
-
-```
-Rule of thumb: ef_construct = max(2 x m, 128)
-
-RECALL REGIME    RECOMMENDED ef_construct
-─────────────    ────────────────────────
-RELAXED          128
-MODERATE         200-256
-STRICT           256-512
-
-Higher ef_construct = better graph quality = better recall at any ef.
-Only affects index build time, not query time or memory.
-Err on the high side — you pay this cost once.
-```
-
-### Step 6c: Choose ef (search-time)
-
-```
-ef must be >= top_k (hard constraint)
-
-RECALL REGIME    RECOMMENDED ef (as multiple of top_k)
-─────────────    ──────────────────────────────────────
-RELAXED          1.5 - 2x top_k
-MODERATE         2 - 4x top_k
-STRICT           4 - 8x top_k
-
-Higher ef = better recall, slower queries.
-This is your primary runtime tuning knob.
-Start at 2x top_k and increase until recall target is met.
-```
-
-### Step 6d: Choose Oversampling (if quantizing)
-
-```
-Only applies when using quantization + rescoring.
-
-QUANTIZATION     RECALL REGIME    OVERSAMPLING FACTOR
-────────────     ─────────────    ───────────────────
-Binary           RELAXED          1.5 - 2.0x
-Binary           MODERATE         3.0 - 5.0x
-Binary           STRICT           Not recommended (use scalar or none)
-Scalar           RELAXED          1.0 - 1.5x
-Scalar           MODERATE         2.0 - 3.0x
-Scalar           STRICT           3.0 - 5.0x (may not be enough)
-
-rescore_candidates = oversampling_factor x top_k
-These candidates are re-ranked using full-precision vectors.
-```
-
----
-
-## Stage 7: Tune for Write Pattern
+## Stage 8: Tune for Write Pattern
 
 ```
 What is your write pattern?
@@ -389,7 +447,7 @@ What is your write pattern?
 │     - Increase WAL capacity
 │     - Consider larger memmap_threshold to batch more in memory
 │     - Monitor segment count (too many small segments hurts read perf)
-│     - May need dedicated write cores (add to Stage 5 calculation)
+│     - May need dedicated write cores (add to Stage 7 calculation)
 │
 ├─ BATCH (periodic bulk loads, no concurrent reads)
 │  │
@@ -414,9 +472,9 @@ What is your write pattern?
 
 ---
 
-## Stage 8: Build Your Architecture Summary
+## Stage 9: Build Your Architecture Summary
 
-Fill in this template with your decisions from Stages 1-7:
+Fill in this template with your decisions from Stages 1-8:
 
 ```
 ╔══════════════════════════════════════════════════════════╗
@@ -440,19 +498,19 @@ Fill in this template with your decisions from Stages 1-7:
 ║  Latency Tier:   ____________                            ║
 ║  Write Pattern:  ____________                            ║
 ║                                                          ║
-║  Quantization Strategy                                   ║
+║  Quantization Strategy (from Stage 2)                    ║
 ║  ─────────────────────                                   ║
 ║  Method:         ____________                            ║
 ║  Oversampling:   ____________                            ║
 ║  Rescore:        ____________                            ║
 ║                                                          ║
-║  HNSW Parameters                                         ║
+║  HNSW Parameters (from Stage 3)                          ║
 ║  ───────────────                                         ║
 ║  m:              ____________                            ║
 ║  ef_construct:   ____________                            ║
-║  ef (search):    ____________                            ║
+║  ef (search):    ____________  (preliminary — benchmark) ║
 ║                                                          ║
-║  Memory Calculation                                      ║
+║  Memory Calculation (from Stage 5)                       ║
 ║  ──────────────────                                      ║
 ║  Quantized vectors:  ________ (location: RAM / disk)     ║
 ║  Full vectors:       ________ (location: RAM / disk)     ║
@@ -460,9 +518,14 @@ Fill in this template with your decisions from Stages 1-7:
 ║  Overhead (20%):     ________                            ║
 ║  ────────────────────────────                            ║
 ║  Total RAM needed:   ________                            ║
-║  Total disk needed:  ________                            ║
 ║                                                          ║
-║  Compute Calculation                                     ║
+║  Disk Calculation (from Stage 6)                         ║
+║  ────────────────                                        ║
+║  Base disk:          ________                            ║
+║  WAL space:          ________                            ║
+║  Total (with 1.5x):  ________                           ║
+║                                                          ║
+║  Compute Calculation (from Stage 7)                      ║
 ║  ───────────────────                                     ║
 ║  Per-query CPU time: ________                            ║
 ║  Cores for QPS:      ________                            ║
@@ -471,7 +534,7 @@ Fill in this template with your decisions from Stages 1-7:
 ║  ────────────────────────────                            ║
 ║  Total vCPUs needed: ________                            ║
 ║                                                          ║
-║  Topology                                                ║
+║  Topology (from Stage 7d)                                ║
 ║  ────────                                                ║
 ║  Nodes:          ____________                            ║
 ║  Shards:         ____________                            ║
@@ -479,6 +542,11 @@ Fill in this template with your decisions from Stages 1-7:
 ║                                                          ║
 ║  Estimated Instance: ____________________________________║
 ║  Estimated Cost:     ____________________________________║
+║                                                          ║
+║  Future Optimizations to Explore                         ║
+║  ───────────────────────────────                         ║
+║  ________________________________________________________║
+║  ________________________________________________________║
 ║                                                          ║
 ╚══════════════════════════════════════════════════════════╝
 ```
@@ -498,13 +566,13 @@ For rapid pattern-matching, here are common scenarios you'll encounter:
 ### Archetype 2: "High-dim text search, strict recall"
 - Same embeddings as above
 - 99% recall, <100ms latency
-- **Recipe**: Scalar quantization (binary too lossy at 99%), m=24-32, ef=4-8x top_k, oversample 3-5x
+- **Recipe**: Scalar quantization (binary too lossy at 99%), m=28, ef=6x top_k, oversample 4x
 - **Cost profile**: Moderate RAM, moderate disk
 
 ### Archetype 3: "Low-dim features, strict recall"
 - CV features, scientific embeddings, 128-960 dims
 - 99% recall
-- **Recipe**: No quantization (full float32 in RAM), m=32, ef=4-8x top_k
+- **Recipe**: No quantization (full float32 in RAM), m=28, ef=6x top_k
 - **Cost profile**: High RAM per vector (no compression), CPU-heavy if high QPS
 
 ### Archetype 4: "Massive scale, relaxed latency"
