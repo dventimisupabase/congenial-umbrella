@@ -6,6 +6,30 @@ Start at **Stage 1** and work through each stage sequentially. Each stage narrow
 design space. By the end, you'll have a concrete starting architecture you can benchmark
 and refine.
 
+### Design Philosophy
+
+This guide produces a **conservative initial estimate** — a defensible starting point
+for a customer conversation, not a final production configuration. The principles:
+
+1. **Conservative over optimal.** Where expert opinion splits (e.g., quantization
+   strategy, HNSW parameter tuning), this guide chooses the safer option. The result
+   may over-provision slightly, but it will not under-deliver on SLAs. Aggressive
+   optimizations (binary quantization, lower m, reduced ef) are flagged as future
+   refinements to explore after benchmarking validates the baseline.
+
+2. **Minimum viable infrastructure.** Topology decisions (replication, sharding)
+   are customer decisions driven by business requirements (HA, compliance, cost
+   tolerance), not sizing decisions. This guide produces a single-node architecture
+   that meets the SLA, then presents multi-node options as recommendations.
+
+3. **Benchmark, then optimize.** The output of this guide is a starting architecture
+   to load-test. Real-world performance depends on data distribution, access patterns,
+   and hardware specifics that no formula can fully capture. Expect to tune hnsw_ef,
+   oversampling, and instance size after benchmarking. The guide's values are chosen
+   to be good enough to pass initial benchmarks, not to be globally optimal.
+
+### Prerequisites
+
 The guide assumes you already know:
 - Your dataset size (number of vectors)
 - Your embedding dimensions and origin
@@ -173,6 +197,13 @@ RELAXED          16    Fixed. Go to 12 only if memory-constrained
 MODERATE         20    Fixed.
 STRICT           32    Fixed.
 
+Top-k adjustment: large top-k values require denser graph connectivity
+because the search must find more true neighbors, not just the closest one.
+  If top_k >= 50:  increase m by one tier
+    RELAXED 16 → 20,  MODERATE 20 → 28,  STRICT stays at 32
+  If top_k <= 20:  decrease m by one tier (minimum m=16)
+    STRICT 32 → 24,   MODERATE 20 → 16,  RELAXED stays at 16
+
 Rarely go above 32 — diminishing returns.
 ```
 
@@ -194,8 +225,10 @@ STRICT           400             Fixed. Go to 512 only if benchmarks
                                  after tuning ef.
 
 Exception: if your write pattern is BATCH (no concurrent reads during
-writes), use 512 for STRICT regardless. The extra build time costs
-nothing when there are no queries to slow down.
+writes), use 400 for STRICT regardless. The extra build time costs
+nothing when there are no queries to slow down. (400 is sufficient
+for 99% recall; 512 is available as a benchmark-driven escalation
+if recall falls short.)
 ```
 
 ### Step 3c: Choose hnsw_ef (search-time) — PRELIMINARY
@@ -796,6 +829,20 @@ Pick the smallest instance in that family where:
   instance_vcpus >= total_vcpus
   instance_ram >= total_ram
   instance can attach the required disk type and size
+
+Overprovision check: if the selected instance has > 1.5x your total_vcpus,
+consider the next smaller instance instead. A shortfall of 1-2 vCPUs is
+acceptable for an initial estimate — the headroom built into Stage 7 already
+accounts for burst capacity. Example: if total_vcpus = 17 and choices are
+c6i.4xlarge (16 vCPU) or c6i.8xlarge (32 vCPU), use c6i.4xlarge. The 1 vCPU
+shortfall is within the headroom margin; 32 vCPU would be a 88% overprovision.
+
+NVMe disk type note: if Stage 6e requires NVMe SSD but your selected instance
+family does not offer local NVMe (e.g., c6i, m6i, r6i), you have two options:
+  1. Use a high-IOPS EBS volume (io2 or gp3 with provisioned IOPS)
+  2. Switch to an NVMe instance family (i3, i4i, c6id, m6id, r6id)
+For initial estimates, use gp3 with 16,000 IOPS provisioned as the default.
+Flag the NVMe question as a refinement for benchmarking.
 ```
 
 ### Step 9b: Estimate Monthly Cost
@@ -888,7 +935,7 @@ Fill in this template with your decisions from Stages 1-9:
 ║  Per-query CPU time: ________                            ║
 ║  Cores for QPS:      ________                            ║
 ║  Cores for writes:   ________                            ║
-║  Headroom (30%):     ________                            ║
+║  Headroom (___%):    ________                            ║
 ║  ────────────────────────────                            ║
 ║  Total vCPUs needed: ________                            ║
 ║                                                          ║
