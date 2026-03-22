@@ -218,11 +218,11 @@
     scrollbar-color: var(--border) transparent;
   }
 
-  .content pre code {
+  .content pre code,
+  .content pre code.hljs {
     background: none;
     padding: 0;
     font-size: 0.8125rem;
-    color: #d4d4d8;
     border-radius: 0;
   }
 
@@ -391,6 +391,11 @@
 
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/highlight.min.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/languages/json.min.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/languages/python.min.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/languages/javascript.min.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/styles/github-dark.min.css">
 <script>
 (async function() {
   // Fetch the markdown source of truth
@@ -425,14 +430,20 @@
     flowchart: { curve: 'basis', padding: 16 },
   });
 
-  // Configure marked — custom renderer for mermaid fenced blocks
+  // Configure marked — custom renderer with mermaid + highlight.js
   const renderer = new marked.Renderer();
-  const origCode = renderer.code;
   renderer.code = function({ text, lang }) {
     if (lang === 'mermaid') {
       return `<div class="mermaid">${text}</div>`;
     }
-    return `<pre><code class="language-${lang || ''}">${text.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</code></pre>`;
+    // Use highlight.js for syntax highlighting
+    if (lang && hljs.getLanguage(lang)) {
+      const highlighted = hljs.highlight(text, { language: lang }).value;
+      return `<pre><code class="hljs language-${lang}">${highlighted}</code></pre>`;
+    }
+    // Fallback: escape and render without highlighting
+    const escaped = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    return `<pre><code>${escaped}</code></pre>`;
   };
 
   marked.setOptions({
