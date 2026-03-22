@@ -25,7 +25,10 @@ What produced your embeddings?
 ├─ Neural text model (OpenAI, Cohere, BGE, E5, etc.)
 │  Dimensions typically: 768 - 4096
 │  Properties: centered near zero, well-distributed, high intrinsic dimensionality
-│  Distance metric: Cosine (default for neural text)
+│  Distance metric: Cosine
+│    Qdrant parameter: distance = "Cosine"
+│    (Qdrant auto-normalizes vectors at upload time and uses Dot internally)
+│    Alternative: use "Dot" if your model was trained with dot-product objective.
 │  │
 │  └─ Are dimensions >= 1024?
 │     ├─ YES ──► EMBEDDING CLASS A: "Binary-friendly neural"
@@ -46,6 +49,7 @@ What produced your embeddings?
 │  Dimensions typically: 512 - 1024
 │  Properties: often well-distributed but may have non-negative activations
 │  Distance metric: Cosine (typical for CLIP-family; verify with model docs)
+│    Qdrant parameter: distance = "Cosine"
 │  │
 │  └──────────► EMBEDDING CLASS B: "Scalar-friendly neural"
 │               Test binary empirically; don't assume it works.
@@ -55,6 +59,8 @@ What produced your embeddings?
 │  Properties: non-negative, magnitude-heavy, not centered at zero
 │  Distance metric: Euclidean (L2). These are NOT normalized embeddings.
 │                   Using Cosine on non-normalized features gives wrong results.
+│    Qdrant parameter: distance = "Euclid"
+│    (Qdrant also supports "Manhattan" for L1 distance if needed)
 │  │
 │  └──────────► EMBEDDING CLASS C: "Quantization-resistant"
 │               Scalar quantization with caution. Binary likely fails.
@@ -63,12 +69,13 @@ What produced your embeddings?
 └─ Other / Unknown
    │
    Distance metric: Check model documentation. Default to Cosine if unknown.
+   Qdrant supports: "Cosine", "Euclid", "Dot", "Manhattan"
    └──────────► EMBEDDING CLASS B (default assumption)
                 Benchmark scalar quantization; fall back to no quantization
                 if recall targets can't be met.
 ```
 
-**Record: your Embedding Class and your Distance Metric.**
+**Record: your Embedding Class and your Distance Metric (Qdrant `distance` value).**
 
 ---
 
@@ -119,6 +126,19 @@ CLASS C             Scalar (test it)    No quantization      No quantization
 (quant-resistant)   rescore: ON         (full float32)       (full float32)
 ```
 
+**Qdrant quantization_config examples:**
+
+```
+Scalar:   quantization_config={"scalar": {"type": "int8", "quantile": 0.99, "always_ram": true}}
+Binary:   quantization_config={"binary": {"always_ram": true}}
+Product:  quantization_config={"product": {"compression": "x32", "always_ram": true}}
+None:     omit quantization_config entirely
+```
+
+Qdrant also supports Product Quantization (up to 64x compression), but it has
+higher indexing cost and lower recall than scalar. Use only when memory is the
+absolute top priority and recall loss is acceptable.
+
 **Record: your quantization method (Binary, Scalar, or None) and whether rescore is ON.**
 
 ---
@@ -127,9 +147,17 @@ CLASS C             Scalar (test it)    No quantization      No quantization
 
 You need these values before you can size memory or compute, so set them now.
 
+**Qdrant parameter mapping:**
+- `m` and `ef_construct` are set in `hnsw_config` at collection creation
+- Search-time ef is called **`hnsw_ef`** in Qdrant (set per-query in `search_params`)
+- Qdrant defaults: m=16, ef_construct=100, full_scan_threshold=10000
+
 ### Step 3a: Choose m
 
 ```
+Qdrant parameter: hnsw_config.m (set at collection creation)
+Qdrant default: 16
+
 RECALL REGIME    m     RULE
 ─────────────    ──    ─────────────────────────────────────────────
 RELAXED          16    Fixed. Go to 12 only if memory-constrained
@@ -144,12 +172,15 @@ Rarely go above 32 — diminishing returns.
 ### Step 3b: Choose ef_construct
 
 ```
+Qdrant parameter: hnsw_config.ef_construct (set at collection creation)
+Qdrant default: 100
+
 ef_construct only affects index build time, not query time or RAM.
 You pay this cost once.
 
 RECALL REGIME    ef_construct    RULE
 ─────────────    ────────────    ──────────────────────────────────────
-RELAXED          128             Fixed.
+RELAXED          128             Fixed. (Above Qdrant's default of 100.)
 MODERATE         256             Fixed.
 STRICT           384             Fixed. Go to 512 only if benchmarks
                                  show recall is still below target
@@ -160,21 +191,24 @@ writes), use 512 for STRICT regardless. The extra build time costs
 nothing when there are no queries to slow down.
 ```
 
-### Step 3c: Choose ef (search-time) — PRELIMINARY
+### Step 3c: Choose hnsw_ef (search-time) — PRELIMINARY
 
 Set a starting value now for compute estimation. You will refine this during
 benchmarking.
 
 ```
-ef must be >= top_k (hard constraint)
+Qdrant parameter: search_params.hnsw_ef (set per-query, not at collection level)
+  Example: client.query_points(..., search_params={"hnsw_ef": 200})
 
-RECALL REGIME    STARTING ef                 RULE
+hnsw_ef must be >= top_k (hard constraint)
+
+RECALL REGIME    STARTING hnsw_ef            RULE
 ─────────────    ──────────────────────────  ──────────────────────────
 RELAXED          2x top_k                    Fixed multiplier.
 MODERATE         3x top_k                    Fixed multiplier.
 STRICT           6x top_k                    Fixed multiplier.
 
-Apply floor: ef = max(calculated_ef, 64)
+Apply floor: hnsw_ef = max(calculated_ef, 64)
   Very small top_k values (e.g., 10) produce ef values too low for
   effective graph traversal. The floor ensures a minimum search width.
 
@@ -183,15 +217,33 @@ Apply floor: ef = max(calculated_ef, 64)
   STRICT gives 6x top_k = 60, the floor bumps ef to 64, but you still
   use the 6x multiplier when looking up the CPU time adjustment.
 
-ef is your primary runtime tuning knob. After benchmarking:
-  - If recall is below target: increase ef.
-  - If latency is above SLA: decrease ef (and accept lower recall,
+NOTE: Qdrant also has full_scan_threshold (default 10000 KB). If a
+segment is smaller than this, Qdrant uses brute-force scan instead of
+HNSW. This is relevant for streaming writes: newly ingested vectors in
+small mutable segments are searched via brute force, not HNSW. This is
+fast for small segments (<20K vectors) and the hnsw_ef parameter does
+not apply to them.
+
+hnsw_ef is your primary runtime tuning knob. After benchmarking:
+  - If recall is below target: increase hnsw_ef.
+  - If latency is above SLA: decrease hnsw_ef (and accept lower recall,
     or improve quantization/graph quality instead).
 ```
 
 ### Step 3d: Choose Oversampling (if quantizing)
 
 ```
+Qdrant parameter: search_params.quantization.oversampling (set per-query)
+  Must be paired with: search_params.quantization.rescore = true
+  Example:
+    client.query_points(..., search_params={
+      "hnsw_ef": 200,
+      "quantization": {"rescore": true, "oversampling": 2.0}
+    })
+
+  NOTE: Qdrant also supports quantization.ignore = true to bypass
+  quantization entirely for a specific query (uses full vectors).
+
 Only applies when using quantization + rescoring from Stage 2.
 If your quantization method is "None," skip this step.
 
@@ -248,6 +300,14 @@ Boundary rule: exact boundary values belong to the lower tier.
 
 Cross-reference Latency Tier with your components.
 
+**Qdrant storage configuration:**
+- Vectors on disk: set `on_disk: true` inside `vectors_config` (per-vector parameter)
+    Example: vectors={"size": 3072, "distance": "Cosine", "on_disk": true}
+- HNSW index on disk: set `on_disk: true` inside `hnsw_config`
+- Quantized vectors in RAM: set `always_ram: true` inside `quantization_config`
+- Automatic mmap promotion: configure `memmap_threshold` in `optimizers_config`
+    (segments larger than this threshold in KB are automatically converted to mmap)
+
 **No-quantization promotion rule**: If your quantization strategy from Stage 2 is
 "no quantization," there are no separate quantized vectors — the full vectors ARE
 the search vectors, and every distance calculation reads them. In this case, promote
@@ -268,6 +328,11 @@ after completing Stage 5.
 * = When there is no quantization layer, every search query reads full vectors
     directly. mmap adds per-query I/O latency that compounds with high ef values.
     Promoting to RAM avoids this.
+
+Qdrant implementation:
+  "RAM" = on_disk: false (default) for vectors; always_ram: true for quantized
+  "mmap" = on_disk: true for vectors; or rely on memmap_threshold auto-promotion
+  "HNSW in RAM" = hnsw_config.on_disk: false (default)
 ```
 
 ---
@@ -296,13 +361,22 @@ BINARY QUANTIZATION (1-bit):
 ```
 Use the m value you chose in Stage 3, Step 3a.
 
-hnsw_memory = num_vectors x m x 2 x 8 bytes
+hnsw_memory = num_vectors x m x 2 x 8 bytes x 1.1
 
-Common values:
-  m=16:  num_vectors x 256 bytes
-  m=20:  num_vectors x 320 bytes
-  m=28:  num_vectors x 448 bytes
-  m=32:  num_vectors x 512 bytes
+The formula: each vector has up to m bidirectional links at layer 0
+(so m x 2 link slots), each stored as an 8-byte reference. The 1.1
+multiplier (10%) accounts for the multi-level HNSW structure: a small
+fraction of nodes are promoted to higher layers with additional links.
+
+NOTE: This is a theoretical approximation. Qdrant does not publish
+their exact graph memory layout. The formula is derived from the
+original HNSW paper and is a reasonable estimate for sizing purposes.
+
+Common values (per 1M vectors):
+  m=16:  1,000,000 x 256 x 1.1 ≈ 282 MB
+  m=20:  1,000,000 x 320 x 1.1 ≈ 352 MB
+  m=28:  1,000,000 x 448 x 1.1 ≈ 493 MB
+  m=32:  1,000,000 x 512 x 1.1 ≈ 563 MB
 ```
 
 ### Step 5c: Page Cache Budget
@@ -383,6 +457,11 @@ Where:
 ### Step 6b: WAL (Write-Ahead Log) Space
 
 ```
+Qdrant uses a WAL for durability. Configuration (in qdrant config YAML):
+  wal:
+    wal_capacity_mb: 32        # size per WAL segment (default 32 MB)
+    wal_segments_ahead: 0      # pre-created segments for write perf (default 0)
+
 WAL accumulates writes before they're flushed to segments.
 
 STREAMING writes:
@@ -586,6 +665,13 @@ AND does total_ram (from Stage 5) fit in a single available machine?
       └─► Replicas: full copies of data, distribute QPS
           num_replicas = ceil(total_vcpus / max_vcpus_per_node)
           Each replica needs total_ram, so total cost = replicas x node_cost.
+
+Qdrant collection creation parameters for topology:
+  shard_number:              number of shards (set at creation, manual choice)
+  replication_factor:        copies per shard (e.g., 2 = primary + 1 replica)
+  write_consistency_factor:  how many replicas must ACK a write before responding
+                             (must be <= replication_factor; set to 1 for async
+                             replication, higher for stronger durability)
 ```
 
 ---
@@ -599,11 +685,18 @@ What is your write pattern?
 │  │
 │  ├─ Write rate < 500/s ──► Standard configuration
 │  │  - Default segment sizes are fine
-│  │  - Qdrant handles background merging automatically
+│  │  - Qdrant handles background merging automatically via three optimizers:
+│  │      Merge Optimizer: combines small segments (controlled by default_segment_number)
+│  │      Vacuum Optimizer: reclaims deleted records (controlled by deleted_threshold)
+│  │      Indexing Optimizer: promotes segments to HNSW + mmap (controlled by
+│  │        indexing_threshold and memmap_threshold)
 │  │  - CPU headroom was already included in Stage 7d
+│  │  - Key Qdrant config: optimizers_config.flush_interval_sec (default: 5)
+│  │    controls how often WAL is flushed to segments
 │  │
 │  └─ Write rate > 500/s ──► Optimize for write throughput
-│     - Increase WAL capacity
+│     - Increase WAL capacity (wal.wal_capacity_mb, default 32)
+│     - Increase wal.wal_segments_ahead for write buffering
 │     - Consider larger memmap_threshold to batch more in memory
 │     - Monitor segment count (too many small segments hurts read perf)
 │     - May need dedicated write cores (add to Stage 7 calculation)
@@ -615,16 +708,28 @@ What is your write pattern?
 │  │  for optimization purposes.
 │  │
 │  ├─► Recommended: disable indexing during load, rebuild after
-│  │   - Set indexing_threshold very high (or disable)
+│  │   - PREFERRED: set hnsw_config.m = 0 at collection creation to disable
+│  │     HNSW graph construction entirely during bulk load. After loading,
+│  │     update the collection to set m to your target value — Qdrant will
+│  │     rebuild the HNSW index automatically.
+│  │   - ALTERNATIVE: set optimizers_config.indexing_threshold = 0 to defer
+│  │     indexing. (NOTE: 0 = disabled. Higher values = larger segments before
+│  │     indexing triggers. This is the opposite of what you might expect.)
 │  │   - Bulk insert all vectors
-│  │   - Trigger index rebuild
-│  │   - Set max_optimization_threads = (total_vcpus - 1) during rebuild
-│  │     (use all cores since no queries are running)
+│  │   - Trigger index rebuild (by updating hnsw_config.m or indexing_threshold)
+│  │   - Set max_optimization_threads high during rebuild (Qdrant config param;
+│  │     null = dynamic CPU saturation, which is ideal when no queries run)
 │  │   - Much faster than incremental indexing
 │  │
 │  ├─► Consider collection aliasing for zero-downtime reindexing:
 │  │   - Build a NEW collection with the batch data
-│  │   - Swap the alias atomically when ready
+│  │   - Swap the alias atomically when ready:
+│  │       POST /collections/aliases
+│  │       {"actions": [
+│  │         {"delete_alias": {"alias_name": "production"}},
+│  │         {"create_alias": {"collection_name": "new_v2", "alias_name": "production"}}
+│  │       ]}
+│  │     (Multiple actions in one request are executed atomically)
 │  │   - Enables rollback to the previous collection if something is wrong
 │  │   - Eliminates any risk of serving partially-indexed data
 │  │
