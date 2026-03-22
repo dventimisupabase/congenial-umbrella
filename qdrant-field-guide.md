@@ -107,35 +107,36 @@ Cross-reference your Embedding Class (Stage 1) with your Recall Regime (Stage 2)
 This table tells you WHICH quantization method to use. The specific oversampling
 factor is set later in Stage 3d — do not pick an oversampling value from this table.
 
-```
-                    RELAXED (90-95%)    MODERATE (96-98%)    STRICT (99-100%)
-                    ─────────────────   ─────────────────    ─────────────────
-CLASS A             Scalar              Scalar               Scalar, or
-(binary-friendly)   rescore: ON         rescore: ON          no quantization
-                                                             rescore: ON (if scalar)
-                    ─────────────────   ─────────────────    ─────────────────
-CLASS B             Scalar              Scalar               No quantization
-(scalar-friendly)   rescore: ON         rescore: ON          (full float32 in RAM)
-                    ─────────────────   ─────────────────    ─────────────────
-CLASS C             Scalar (test it)    No quantization      No quantization
-(quant-resistant)   rescore: ON         (full float32)       (full float32)
+| Embedding Class | RELAXED (90-95%) | MODERATE (96-98%) | STRICT (99-100%) |
+|-----------------|------------------|-------------------|------------------|
+| **CLASS A** (binary-friendly) | Scalar, rescore: ON | Scalar, rescore: ON | Scalar, or no quantization; rescore: ON (if scalar) |
+| **CLASS B** (scalar-friendly) | Scalar, rescore: ON | Scalar, rescore: ON | No quantization (full float32 in RAM) |
+| **CLASS C** (quant-resistant) | Scalar (test it), rescore: ON | No quantization (full float32) | No quantization (full float32) |
 
-NOTE on Binary Quantization: For CLASS A embeddings, binary quantization
-offers 32x compression (vs scalar's 4x) and can be effective for high-dim
-neural embeddings. However, expert opinion is split on whether binary is
-reliable enough for production use at top-k >= 50. This guide defaults to
-scalar quantization as the conservative choice. Consider binary quantization
-as a FUTURE OPTIMIZATION after validating scalar meets your requirements —
-especially when RAM savings are critical and top-k is small (< 20).
-```
+> **NOTE on Binary Quantization:** For CLASS A embeddings, binary quantization
+> offers 32x compression (vs scalar's 4x) and can be effective for high-dim
+> neural embeddings. However, expert opinion is split on whether binary is
+> reliable enough for production use at top-k >= 50. This guide defaults to
+> scalar quantization as the conservative choice. Consider binary quantization
+> as a FUTURE OPTIMIZATION after validating scalar meets your requirements —
+> especially when RAM savings are critical and top-k is small (< 20).
 
 **Qdrant quantization_config examples:**
 
+```json
+{"scalar": {"type": "int8", "quantile": 0.99, "always_ram": true}}
 ```
-Scalar:   quantization_config={"scalar": {"type": "int8", "quantile": 0.99, "always_ram": true}}
-Binary:   quantization_config={"binary": {"always_ram": true}}
-Product:  quantization_config={"product": {"compression": "x32", "always_ram": true}}
-None:     omit quantization_config entirely
+
+```json
+{"binary": {"always_ram": true}}
+```
+
+```json
+{"product": {"compression": "x32", "always_ram": true}}
+```
+
+```text
+None: omit quantization_config entirely
 ```
 
 Qdrant also supports Product Quantization (up to 64x compression), but it has
@@ -157,44 +158,45 @@ You need these values before you can size memory or compute, so set them now.
 
 ### Step 3a: Choose m
 
-```
+```text
 Qdrant parameter: hnsw_config.m (set at collection creation)
 Qdrant default: 16
+```
 
-RECALL REGIME    m     RULE
-─────────────    ──    ─────────────────────────────────────────────
-RELAXED          16    Fixed. Go to 12 only if memory-constrained
-                       after completing Stage 5 and needing to cut.
-MODERATE         20    Fixed.
-STRICT           32    Fixed.
+| RECALL REGIME | m | RULE |
+|---------------|---|------|
+| RELAXED | 16 | Fixed. Go to 12 only if memory-constrained after completing Stage 5 and needing to cut. |
+| MODERATE | 20 | Fixed. |
+| STRICT | 32 | Fixed. |
 
+```text
 Top-k adjustment: large top-k values require denser graph connectivity
 because the search must find more true neighbors, not just the closest one.
   If top_k >= 50:  increase m by one tier
-    RELAXED 16 → 20,  MODERATE 20 → 28,  STRICT stays at 32
+    RELAXED 16 -> 20,  MODERATE 20 -> 28,  STRICT stays at 32
   If top_k <= 20:  decrease m by one tier (minimum m=16)
-    STRICT 32 → 24,   MODERATE 20 → 16,  RELAXED stays at 16
+    STRICT 32 -> 24,   MODERATE 20 -> 16,  RELAXED stays at 16
 
 Rarely go above 32 — diminishing returns.
 ```
 
 ### Step 3b: Choose ef_construct
 
-```
+```text
 Qdrant parameter: hnsw_config.ef_construct (set at collection creation)
 Qdrant default: 100
 
 ef_construct only affects index build time, not query time or RAM.
 You pay this cost once.
+```
 
-RECALL REGIME    ef_construct    RULE
-─────────────    ────────────    ──────────────────────────────────────
-RELAXED          200             Fixed. (Above Qdrant's default of 100.)
-MODERATE         256             Fixed.
-STRICT           400             Fixed. Go to 512 only if benchmarks
-                                 show recall is still below target
-                                 after tuning ef.
+| RECALL REGIME | ef_construct | RULE |
+|---------------|-------------|------|
+| RELAXED | 200 | Fixed. (Above Qdrant's default of 100.) |
+| MODERATE | 256 | Fixed. |
+| STRICT | 400 | Fixed. Go to 512 only if benchmarks show recall is still below target after tuning ef. |
 
+```text
 Exception: if your write pattern is BATCH (no concurrent reads during
 writes), use 400 for STRICT regardless. The extra build time costs
 nothing when there are no queries to slow down. (400 is sufficient
@@ -207,18 +209,20 @@ if recall falls short.)
 Set a starting value now for compute estimation. You will refine this during
 benchmarking.
 
-```
+```text
 Qdrant parameter: search_params.hnsw_ef (set per-query, not at collection level)
   Example: client.query_points(..., search_params={"hnsw_ef": 200})
 
 hnsw_ef must be >= top_k (hard constraint)
+```
 
-RECALL REGIME    STARTING hnsw_ef            RULE
-─────────────    ──────────────────────────  ──────────────────────────
-RELAXED          2x top_k                    Fixed multiplier.
-MODERATE         3x top_k                    Fixed multiplier.
-STRICT           6x top_k                    Fixed multiplier.
+| RECALL REGIME | STARTING hnsw_ef | RULE |
+|---------------|-----------------|------|
+| RELAXED | 2x top_k | Fixed multiplier. |
+| MODERATE | 3x top_k | Fixed multiplier. |
+| STRICT | 6x top_k | Fixed multiplier. |
 
+```text
 Apply floor based on recall regime:
   RELAXED:   hnsw_ef = max(calculated_ef, 64)
   MODERATE:  hnsw_ef = max(calculated_ef, 64)
@@ -245,7 +249,7 @@ hnsw_ef is your primary runtime tuning knob. After benchmarking:
 
 ### Step 3d: Choose Oversampling (if quantizing)
 
-```
+```text
 Qdrant parameter: search_params.quantization.oversampling (set per-query)
   Must be paired with: search_params.quantization.rescore = true
   Example:
@@ -259,18 +263,25 @@ Qdrant parameter: search_params.quantization.oversampling (set per-query)
 
 Only applies when using quantization + rescoring from Stage 2.
 If your quantization method is "None," skip this step.
+```
 
-QUANTIZATION     RECALL REGIME    OVERSAMPLING FACTOR
-────────────     ─────────────    ───────────────────
-Scalar           RELAXED          2.0x
-Scalar           MODERATE         2.5x
-Scalar           STRICT           4.0x
+| QUANTIZATION | RECALL REGIME | OVERSAMPLING FACTOR |
+|-------------|---------------|---------------------|
+| Scalar | RELAXED | 2.0x |
+| Scalar | MODERATE | 2.5x |
+| Scalar | STRICT | 4.0x |
 
+```text
 If exploring binary quantization as a future optimization (see Stage 2 NOTE):
-Binary           RELAXED          3.0x
-Binary           MODERATE         4.0x
-Binary           STRICT           Not recommended (use scalar or none)
+```
 
+| QUANTIZATION | RECALL REGIME | OVERSAMPLING FACTOR |
+|-------------|---------------|---------------------|
+| Binary | RELAXED | 3.0x |
+| Binary | MODERATE | 4.0x |
+| Binary | STRICT | Not recommended (use scalar or none) |
+
+```text
 rescore_candidates = oversampling_factor x top_k
 These candidates are re-ranked using full-precision vectors.
 ```
@@ -319,15 +330,15 @@ Cross-reference Latency Tier with your components.
 the search vectors, and every distance calculation reads them. In this case, promote
 full vectors one tier toward RAM (marked with * below).
 
-```
-Component          ULTRA-TIGHT    TIGHT          MODERATE         RELAXED
-──────────────     ───────────    ─────          ────────         ───────
-HNSW index         RAM            RAM            RAM              RAM
-Quantized vectors  RAM            RAM            RAM or mmap      mmap OK
-Full vectors       RAM            mmap (NVMe)    mmap (SSD)       mmap (SSD)
-  *if no quant:    RAM            RAM            RAM*             mmap (SSD)
-Payload/metadata   RAM            RAM or mmap    mmap             mmap
+| Component | ULTRA-TIGHT | TIGHT | MODERATE | RELAXED |
+|-----------|-------------|-------|----------|---------|
+| HNSW index | RAM | RAM | RAM | RAM |
+| Quantized vectors | RAM | RAM | RAM or mmap | mmap OK |
+| Full vectors | RAM | mmap (NVMe) | mmap (SSD) | mmap (SSD) |
+| *if no quant: | RAM | RAM | RAM* | mmap (SSD) |
+| Payload/metadata | RAM | RAM or mmap | mmap | mmap |
 
+```text
 "RAM or mmap" = use RAM. Only fall back to mmap if RAM budget is exceeded
 after completing Stage 5.
 
@@ -347,7 +358,7 @@ Qdrant implementation:
 
 ### Step 5a: Vector Memory
 
-```
+```text
 Pick your quantization strategy from Stage 2 and calculate:
 
 NO QUANTIZATION (float32):
@@ -364,7 +375,7 @@ BINARY QUANTIZATION (1-bit):
 
 ### Step 5b: HNSW Index Memory
 
-```
+```text
 Use the m value you chose in Stage 3, Step 3a.
 
 hnsw_memory = num_vectors x m x 2 x 8 bytes x 1.1
@@ -386,7 +397,7 @@ Common values (per 1M vectors):
 
 ### Step 5c: Page Cache Budget
 
-```
+```text
 If any component is placed on mmap (from Stage 4 Storage Placement Table),
 the OS uses page cache to keep frequently accessed pages in RAM. Budget
 for this explicitly.
@@ -410,7 +421,7 @@ If everything is in RAM (no mmap components):
 
 ### Step 5d: Process Overhead
 
-```
+```text
 process_overhead = 500 MB (fixed)
 
 This covers:
@@ -422,7 +433,7 @@ This covers:
 
 ### Step 5e: Total RAM
 
-```
+```text
 total_ram = ram_components + page_cache + process_overhead + merge_headroom
 
 Where:
@@ -450,7 +461,7 @@ it's also in RAM (Qdrant uses disk as the durable backing store).
 
 ### Step 6a: Base Disk
 
-```
+```text
 base_disk = full_vector_memory + quantized_memory + hnsw_on_disk
 
 Where:
@@ -461,7 +472,7 @@ Where:
 
 ### Step 6b: WAL (Write-Ahead Log) Space
 
-```
+```text
 Qdrant uses a WAL for durability. Configuration (in qdrant config YAML):
   wal:
     wal_capacity_mb: 32        # size per WAL segment (default 32 MB)
@@ -486,7 +497,7 @@ RARE/STATIC writes:
 
 ### Step 6c: Operational Headroom
 
-```
+```text
 Disk operations that temporarily require extra space:
 
 segment_merge_overhead = base_disk x 0.50
@@ -500,7 +511,7 @@ snapshot_space = base_disk x 1.0
 
 ### Step 6d: Total Disk
 
-```
+```text
 total_disk = base_disk + wal_space + segment_merge_overhead + snapshot_space
 
 Minimum recommended: 30 GB (to avoid running into filesystem overhead
@@ -509,15 +520,17 @@ on very small datasets).
 
 ### Step 6e: Disk Type
 
-```
-Are any components on mmap AND in the query path?
-├─ YES, with TIGHT latency tier ──► NVMe SSD required
-│  (mmap reads must be <100μs for latency budget)
-│
-├─ YES, with MODERATE/RELAXED ────► Standard SSD (e.g., gp3) sufficient
-│
-└─ NO (everything in RAM) ────────► Standard SSD sufficient
-   (Disk is only for persistence and batch loads, not in the query path)
+```mermaid
+flowchart TD
+    Q{"Are any components on mmap\nAND in the query path?"}
+    Q -->|"YES, TIGHT latency tier"| NVMe["NVMe SSD required\n(mmap reads must be <100us for latency budget)"]
+    Q -->|"YES, MODERATE/RELAXED"| SSD["Standard SSD sufficient\n(e.g., gp3)"]
+    Q -->|"NO (everything in RAM)"| SSD2["Standard SSD sufficient\n(disk only for persistence and batch loads)"]
+
+    style Q fill:#18181b,stroke:#3f3f46,color:#e4e4e7
+    style NVMe fill:#3b1f1f,stroke:#ef4444,color:#fca5a5
+    style SSD fill:#14532d,stroke:#22c55e,color:#86efac
+    style SSD2 fill:#14532d,stroke:#22c55e,color:#86efac
 ```
 
 ---
@@ -531,14 +544,14 @@ and the cost of each distance computation (driven by dimensions and quantization
 
 **Step 1: Look up base distance computation cost per query.**
 
-```
-                        Binary quant    Scalar quant    No quant (float32)
-                        ────────────    ────────────    ──────────────────
-dims < 512              ~0.3ms          ~0.5ms          ~1.0ms
-dims 512-1024           ~0.5ms          ~1.0ms          ~2.0ms
-dims 1024-2048          ~0.8ms          ~1.5ms          ~3.0ms
-dims 2048-4096          ~1.0ms          ~2.0ms          ~5.0ms
+| Dimensions | Binary quant | Scalar quant | No quant (float32) |
+|------------|-------------|-------------|-------------------|
+| dims < 512 | ~0.3ms | ~0.5ms | ~1.0ms |
+| dims 512-1024 | ~0.5ms | ~1.0ms | ~2.0ms |
+| dims 1024-2048 | ~0.8ms | ~1.5ms | ~3.0ms |
+| dims 2048-4096 | ~1.0ms | ~2.0ms | ~5.0ms |
 
+```text
 These assume:
   - ef = 64 (the reference point for all adjustments below)
   - Warm cache (data in RAM or OS page cache)
@@ -549,7 +562,7 @@ These assume:
 
 **Step 2: Adjust for your actual ef value.**
 
-```
+```text
 The relationship between ef and query time is roughly linear (not
 exactly, due to early termination, but close enough for sizing).
 
@@ -567,7 +580,7 @@ Examples:
 
 **Step 3: Add rescoring cost (if quantizing).**
 
-```
+```text
 If using quantization with rescoring:
   rescore_candidates = oversampling_factor x top_k  (from Stage 3d)
 
@@ -586,7 +599,7 @@ If NOT using quantization (no rescore step):
 
 **Step 4: Add mmap overhead (if applicable).**
 
-```
+```text
 If full vectors are on mmap AND no quantization (every search reads disk):
   mmap_overhead = 1.0ms
   (Random I/O pattern during graph traversal; page cache helps but misses add up)
@@ -597,13 +610,13 @@ Otherwise:
 
 **Step 5: Total per-query time.**
 
-```
+```text
 per_query_time = per_query_base + rescore_time + mmap_overhead
 ```
 
 ### Step 7b: Calculate Required Cores for QPS
 
-```
+```text
 cores_for_queries = target_QPS x per_query_time_seconds
 
 Then add headroom based on latency tier and write pattern:
@@ -628,7 +641,7 @@ and the gap between average and P99 query times.
 
 ### Step 7c: Account for Write Load
 
-```
+```text
 If concurrent reads + writes (STREAMING pattern):
   Indexing time per vector (use these fixed values):
     m=12: 1.0ms    m=16: 1.5ms    m=20: 2.5ms
@@ -643,7 +656,7 @@ If batch writes (no concurrent reads):
 
 ### Step 7d: Total vCPUs
 
-```
+```text
 total_vcpus = cores_for_queries + headroom_cores + write_cores
 
 Round up to the nearest whole number.
@@ -740,11 +753,12 @@ Monitor segment count — too many small segments hurts read performance.
 - Consider **collection aliasing** for zero-downtime reindexing:
 
 ```json
-POST /collections/aliases
-{"actions": [
-  {"delete_alias": {"alias_name": "production"}},
-  {"create_alias": {"collection_name": "new_v2", "alias_name": "production"}}
-]}
+{
+  "actions": [
+    {"delete_alias": {"alias_name": "production"}},
+    {"create_alias": {"collection_name": "new_v2", "alias_name": "production"}}
+  ]
+}
 ```
 
 Multiple actions in one request are executed atomically. Enables rollback.
@@ -758,21 +772,21 @@ Set `on_disk: false` for everything that fits in RAM. No write headroom needed i
 
 ### Step 9a: Map Requirements to Instance Type
 
-```
+```text
 From your calculations:
   - total_vcpus (Stage 7d)
   - total_ram (Stage 5e)
   - total_disk (Stage 6d)
   - disk_type (Stage 6e)
+```
 
-Choose the DOMINANT constraint:
-  If total_ram > total_vcpus × 4 GB ──► Memory-bound. Use R-series (memory-optimized).
-    Examples: AWS r6i, r7i | GCP n2-highmem | Azure E-series
-  If total_vcpus × 4 GB > total_ram ──► Compute-bound. Use C-series (compute-optimized).
-    Examples: AWS c6i, c7i | GCP c3 | Azure F-series
-  If roughly balanced ──► Use M-series (general-purpose).
-    Examples: AWS m6i, m7i | GCP n2-standard | Azure D-series
+| Constraint | Instance Family | AWS Examples | GCP Examples | Azure Examples |
+|------------|----------------|-------------|-------------|----------------|
+| Memory-bound (total_ram > total_vcpus x 4 GB) | R-series (memory-optimized) | r6i, r7i | n2-highmem | E-series |
+| Compute-bound (total_vcpus x 4 GB > total_ram) | C-series (compute-optimized) | c6i, c7i | c3 | F-series |
+| Roughly balanced | M-series (general-purpose) | m6i, m7i | n2-standard | D-series |
 
+```text
 Pick the smallest instance in that family where:
   instance_vcpus >= total_vcpus
   instance_ram >= total_ram
@@ -795,26 +809,27 @@ Flag the NVMe question as a refinement for benchmarking.
 
 ### Step 9b: Estimate Monthly Cost
 
-```
+```text
 Monthly cost ≈ instance_hourly_rate x 730 hours x num_nodes
              + disk_gb x disk_price_per_gb_month x num_nodes
 
 For reserved instances (1-year commitment): multiply by 0.60-0.70.
-
-Common reference prices (AWS us-east-1, on-demand, approximate):
-  c6i.xlarge   (4 vCPU, 8 GB):    $0.17/hr ≈ $124/mo
-  c6i.2xlarge  (8 vCPU, 16 GB):   $0.34/hr ≈ $248/mo
-  c6i.4xlarge  (16 vCPU, 32 GB):  $0.68/hr ≈ $496/mo
-  c6i.8xlarge  (32 vCPU, 64 GB):  $1.36/hr ≈ $993/mo
-  c6i.12xlarge (48 vCPU, 96 GB):  $2.04/hr ≈ $1489/mo
-  m6i.xlarge   (4 vCPU, 16 GB):   $0.192/hr ≈ $140/mo
-  m6i.2xlarge  (8 vCPU, 32 GB):   $0.384/hr ≈ $280/mo
-  m6i.4xlarge  (16 vCPU, 64 GB):  $0.768/hr ≈ $561/mo
-  r6i.xlarge   (4 vCPU, 32 GB):   $0.252/hr ≈ $184/mo
-  r6i.2xlarge  (8 vCPU, 64 GB):   $0.504/hr ≈ $368/mo
-  gp3 SSD: $0.08/GB/month
-  NVMe (local): included in instance price for i-series/d-series
 ```
+
+| Instance | vCPU | RAM | Hourly Rate | ~Monthly Cost |
+|----------|------|-----|------------|---------------|
+| c6i.xlarge | 4 | 8 GB | $0.17/hr | $124/mo |
+| c6i.2xlarge | 8 | 16 GB | $0.34/hr | $248/mo |
+| c6i.4xlarge | 16 | 32 GB | $0.68/hr | $496/mo |
+| c6i.8xlarge | 32 | 64 GB | $1.36/hr | $993/mo |
+| c6i.12xlarge | 48 | 96 GB | $2.04/hr | $1489/mo |
+| m6i.xlarge | 4 | 16 GB | $0.192/hr | $140/mo |
+| m6i.2xlarge | 8 | 32 GB | $0.384/hr | $280/mo |
+| m6i.4xlarge | 16 | 64 GB | $0.768/hr | $561/mo |
+| r6i.xlarge | 4 | 32 GB | $0.252/hr | $184/mo |
+| r6i.2xlarge | 8 | 64 GB | $0.504/hr | $368/mo |
+| gp3 SSD | — | — | — | $0.08/GB/mo |
+| NVMe (local) | — | — | — | included in i-series/d-series |
 
 ---
 
