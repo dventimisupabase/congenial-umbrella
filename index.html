@@ -541,7 +541,16 @@
   </div>
 </div>
 
-<script>
+<script type="module">
+// ---------------------------------------------------------------------------
+// Import sizing engine — single source of truth
+// ---------------------------------------------------------------------------
+import {
+  classifyEmbeddings, recallRegime, hnswParams, latencyAssess,
+  sizeMemory, sizeDisk, sizeCompute, selectInstance, suggestOptimizations,
+  sizeCluster,
+} from './sizer_engine.js';
+
 // ---------------------------------------------------------------------------
 // Wizard navigation
 // ---------------------------------------------------------------------------
@@ -668,290 +677,71 @@ function validateStep(step) {
 }
 
 // ---------------------------------------------------------------------------
-// Sizing engine (port of qdrant_sizer.py)
-// ---------------------------------------------------------------------------
-
-// Stage 1
-function classifyEmbeddings(type, dims) {
-  if (type === 'neural_text') {
-    const cls = dims >= 1024 ? 'A' : 'B';
-    const label = cls === 'A' ? 'Binary-friendly neural' : 'Scalar-friendly neural';
-    return { cls, label, metric: 'Cosine', qdrant: 'Cosine' };
-  }
-  if (type === 'neural_vision')
-    return { cls: 'B', label: 'Scalar-friendly neural', metric: 'Cosine', qdrant: 'Cosine' };
-  if (type === 'classical_cv')
-    return { cls: 'C', label: 'Quantization-resistant', metric: 'Euclidean (L2)', qdrant: 'Euclid' };
-  return { cls: 'B', label: 'Scalar-friendly neural (default)', metric: 'Cosine', qdrant: 'Cosine' };
-}
-
-// Stage 2
-const QUANT_MATRIX = {
-  'A-RELAXED':'scalar','A-MODERATE':'scalar','A-STRICT':'scalar',
-  'B-RELAXED':'scalar','B-MODERATE':'scalar','B-STRICT':'none',
-  'C-RELAXED':'scalar','C-MODERATE':'none','C-STRICT':'none',
-};
-
-function recallRegime(target, cls) {
-  let regime;
-  if (target <= 0.95) regime = 'RELAXED';
-  else if (target <= 0.98) regime = 'MODERATE';
-  else regime = 'STRICT';
-  const quant = QUANT_MATRIX[`${cls}-${regime}`];
-  return { regime, quant, rescore: quant !== 'none' };
-}
-
-// Stage 3
-const M_BASE = {RELAXED:16, MODERATE:20, STRICT:32};
-const M_UP   = {RELAXED:20, MODERATE:28, STRICT:32};
-const M_DOWN = {RELAXED:16, MODERATE:16, STRICT:24};
-const EF_C_BASE = {RELAXED:200, MODERATE:256, STRICT:400};
-const EF_MULT = {RELAXED:2, MODERATE:3, STRICT:6};
-const EF_FLOOR = {RELAXED:64, MODERATE:64, STRICT:128};
-const OVERSAMP = {'scalar-RELAXED':2.0,'scalar-MODERATE':2.5,'scalar-STRICT':4.0,
-                  'binary-RELAXED':3.0,'binary-MODERATE':4.0};
-const IDX_TIME = {12:1.0,16:1.5,20:2.5,24:3.0,28:3.5,32:4.0};
-
-function hnswParams(regime, topK, quant, writePat) {
-  let m = topK >= 50 ? M_UP[regime] : topK <= 20 ? M_DOWN[regime] : M_BASE[regime];
-  let efC = (writePat === 'batch' && regime === 'STRICT') ? 400 : EF_C_BASE[regime];
-  let calcEf = EF_MULT[regime] * topK;
-  let ef = Math.max(calcEf, EF_FLOOR[regime]);
-  let efNote = ef > calcEf ? `floor-adjusted from ${calcEf} to ${ef}` : `${EF_MULT[regime]}x top_k`;
-  let os = null, rc = null;
-  if (quant !== 'none') {
-    os = OVERSAMP[`${quant}-${regime}`] || null;
-    rc = os ? Math.round(os * topK) : null;
-  }
-  return { m, efC, ef, efNote, os, rc };
-}
-
-// Stage 4
-function latencyAssess(p99, quant) {
-  let tier;
-  if (p99 < 20) tier = 'ULTRA-TIGHT';
-  else if (p99 <= 99) tier = 'TIGHT';
-  else if (p99 <= 500) tier = 'MODERATE';
-  else tier = 'RELAXED';
-
-  const noQuant = quant === 'none';
-  const placements = {
-    'ULTRA-TIGHT': ['RAM','RAM','RAM'],
-    'TIGHT': ['RAM','RAM','mmap (NVMe)'],
-    'MODERATE': ['RAM','RAM or mmap','mmap (SSD)'],
-    'RELAXED': ['RAM','mmap','mmap (SSD)'],
-  };
-  let [hP, qP, fP] = placements[tier];
-  let promoted = false;
-  if (noQuant) {
-    qP = 'N/A';
-    const promoMap = {'ULTRA-TIGHT':'RAM','TIGHT':'RAM','MODERATE':'RAM','RELAXED':'mmap (SSD)'};
-    fP = promoMap[tier];
-    promoted = tier === 'MODERATE';
-  }
-  return { tier, hP, qP, fP, promoted };
-}
-
-// Stage 5
-function sizeMemory(nv, dims, quant, hnsw, lat) {
-  const fullMB = nv * dims * 4 / (1024*1024);
-  let quantMB = 0;
-  if (quant === 'scalar') quantMB = nv * dims / (1024*1024);
-  else if (quant === 'binary') quantMB = nv * dims / 8 / (1024*1024);
-
-  const hnswMB = nv * hnsw.m * 2 * 8 * 1.1 / (1024*1024);
-
-  let ramComp = hnswMB;
-  if (lat.qP === 'RAM') ramComp += quantMB;
-  if (lat.fP === 'RAM') ramComp += fullMB;
-
-  let pageCache = 0;
-  if (lat.fP.includes('mmap') && quant !== 'none') pageCache = 0.10 * fullMB;
-  else if (lat.fP.includes('mmap') && quant === 'none') pageCache = 0.30 * fullMB;
-  if (lat.qP && lat.qP.includes('mmap')) pageCache += 0.50 * quantMB;
-
-  const overhead = 500;
-  const merge = ramComp * 0.10;
-  const total = ramComp + pageCache + overhead + merge;
-
-  const tiers = [4,8,16,32,64,128,256];
-  let rounded = 256;
-  for (const t of tiers) { if (t * 1024 >= total) { rounded = t; break; } }
-
-  return { quantMB: Math.round(quantMB), fullMB: Math.round(fullMB), hnswMB: Math.round(hnswMB),
-           pageCacheMB: Math.round(pageCache), overheadMB: overhead, mergeMB: Math.round(merge),
-           totalMB: Math.round(total), roundedGB: rounded };
-}
-
-// Stage 6
-function sizeDisk(nv, dims, mem, writePat, writeRate, batchSize, lat) {
-  const base = mem.fullMB + mem.quantMB + mem.hnswMB;
-  let wal;
-  if (writePat === 'streaming') wal = 2048;
-  else if (writePat === 'batch') wal = Math.max(batchSize * dims * 4 * 2 / (1024*1024), 1024);
-  else wal = 1024;
-
-  const mergeOH = base * 0.50;
-  const snap = base * 1.0;
-  const totalMB = base + wal + mergeOH + snap;
-  const totalGB = Math.max(Math.ceil(totalMB / 1024), 30);
-
-  const mmapQuery = lat.fP.includes('mmap') || (lat.qP && lat.qP.includes('mmap'));
-  let diskType;
-  if (mmapQuery && lat.tier === 'TIGHT') diskType = 'NVMe SSD (gp3 w/ provisioned IOPS)';
-  else diskType = 'Standard SSD (gp3)';
-
-  return { baseMB: Math.round(base), walMB: Math.round(wal), mergeMB: Math.round(mergeOH),
-           snapMB: Math.round(snap), totalGB, diskType };
-}
-
-// Stage 7
-const CPU_BASE = {
-  '<512-binary':0.3,'<512-scalar':0.5,'<512-none':1.0,
-  '512-1024-binary':0.5,'512-1024-scalar':1.0,'512-1024-none':2.0,
-  '1024-2048-binary':0.8,'1024-2048-scalar':1.5,'1024-2048-none':3.0,
-  '2048-4096-binary':1.0,'2048-4096-scalar':2.0,'2048-4096-none':5.0,
-};
-
-function dimBucket(d) {
-  if (d < 512) return '<512';
-  if (d <= 1024) return '512-1024';
-  if (d <= 2048) return '1024-2048';
-  return '2048-4096';
-}
-
-function sizeCompute(dims, quant, hnsw, lat, qps, writePat, writeRate) {
-  const base = CPU_BASE[`${dimBucket(dims)}-${quant}`];
-  const efAdj = hnsw.ef / 64;
-  const pqBase = base * efAdj;
-
-  let rescore = 0;
-  if (hnsw.rc && lat.fP.includes('mmap')) rescore = hnsw.rc * 0.01;
-  else if (hnsw.rc) rescore = 0.1;
-
-  let mmapOH = 0;
-  if (quant === 'none' && lat.fP.includes('mmap')) mmapOH = 1.0;
-
-  const pqTime = pqBase + rescore + mmapOH;
-  const cores = qps * (pqTime / 1000);
-
-  const tightStream = lat.tier === 'TIGHT' && writePat === 'streaming';
-  const tightBatch = lat.tier === 'TIGHT' && writePat !== 'streaming';
-  const headPct = tightStream ? 100 : tightBatch ? 50 : 30;
-  const headCores = cores * (headPct / 100);
-
-  let writeCores = 0;
-  if (writePat === 'streaming') {
-    const idxTime = IDX_TIME[hnsw.m] || 3.0;
-    writeCores = writeRate * (idxTime / 1000);
-  }
-
-  const total = Math.max(Math.ceil(cores + headCores + writeCores), 4);
-
-  return { pqBase: pqBase.toFixed(2), efAdj: efAdj.toFixed(1), rescoreMs: rescore.toFixed(2),
-           mmapOH, pqTime: pqTime.toFixed(2), cores: cores.toFixed(1), headPct,
-           headCores: headCores.toFixed(1), writeCores: writeCores.toFixed(1), total };
-}
-
-// Stage 9
-const INSTANCES = [
-  ['c6i.xlarge',4,8,'C',0.170],['c6i.2xlarge',8,16,'C',0.340],
-  ['c6i.4xlarge',16,32,'C',0.680],['c6i.8xlarge',32,64,'C',1.360],
-  ['c6i.12xlarge',48,96,'C',2.040],
-  ['m6i.xlarge',4,16,'M',0.192],['m6i.2xlarge',8,32,'M',0.384],['m6i.4xlarge',16,64,'M',0.768],
-  ['r6i.xlarge',4,32,'R',0.252],['r6i.2xlarge',8,64,'R',0.504],
-];
-
-function selectInstance(comp, mem, disk) {
-  const vcpus = comp.total;
-  const ram = mem.roundedGB;
-
-  let family, constraint, familyLabel;
-  if (ram > vcpus * 4) { family='R'; constraint='memory'; familyLabel='R-series (memory-optimized)'; }
-  else if (vcpus * 4 > ram) { family='C'; constraint='compute'; familyLabel='C-series (compute-optimized)'; }
-  else { family='M'; constraint='balanced'; familyLabel='M-series (general-purpose)'; }
-
-  let cands = INSTANCES.filter(i => i[3] === family).sort((a,b) => a[1]-b[1]);
-  let sel = cands.find(i => i[1] >= vcpus && i[2] >= ram);
-  let note = '';
-
-  if (sel && sel[1] > vcpus * 1.5) {
-    const idx = cands.indexOf(sel);
-    if (idx > 0 && cands[idx-1][2] >= ram) {
-      const smaller = cands[idx-1];
-      note = `Using ${smaller[0]} (${smaller[1]} vCPU) instead of ${sel[0]} (${sel[1]} vCPU) to avoid ${Math.round(sel[1]/vcpus*100-100)}% overprovision. ${vcpus - smaller[1]} vCPU shortfall is within headroom.`;
-      sel = smaller;
-    }
-  }
-
-  if (!sel) { sel = cands[cands.length-1] || INSTANCES[INSTANCES.length-1]; note = 'No exact fit; using largest available.'; }
-
-  const monthly = sel[4] * 730;
-  const reserved = monthly * 0.65;
-  const diskCost = disk.totalGB * 0.08;
-
-  return { name: sel[0], vcpus: sel[1], ram: sel[2], familyLabel, constraint,
-           onDemand: Math.round(monthly + diskCost), reserved: Math.round(reserved + diskCost), note };
-}
-
-// Future optimizations
-function futureOpts(emb, recall, hnsw, lat, dims, topK, writePat) {
-  const opts = ['HA: add replication_factor=2 for failover (doubles infra cost). Recommended if P99 SLA is contractual.'];
-  if (emb.cls === 'A' && recall.quant === 'scalar') {
-    opts.push(topK < 20
-      ? 'Binary quantization: 32x compression. Viable for top-k < 20; benchmark against recall target.'
-      : 'Binary quantization: expert opinion split at top-k >= 50. Test empirically.');
-  }
-  if (emb.cls === 'A' && dims >= 1536)
-    opts.push(`Matryoshka dimension reduction: test ${dims} -> ${Math.floor(dims/2)} dims against recall target.`);
-  if (writePat === 'batch') {
-    opts.push('Collection aliasing: build new collection per batch, swap alias atomically.');
-    opts.push('Autoscaling: scale replicas up during peak QPS window, down during off-peak.');
-  }
-  if (emb.cls === 'C' && recall.quant === 'none')
-    opts.push('Scalar quantization: guide defaults to none for Class C + high recall. Test empirically.');
-  return opts;
-}
-
-// ---------------------------------------------------------------------------
-// Main calculation
+// Main calculation (uses imported sizeCluster from sizer_engine.js)
 // ---------------------------------------------------------------------------
 let lastResult = null;
 
 function calculate() {
   if (!validateStep(currentStep)) return;
 
-  const embType = getRadio('embedding_type');
-  const dims = getInt('dimensions');
-  const nv = getInt('num_vectors');
-  const qps = getInt('peak_qps');
   const wp = getRadio('write_pattern');
   const wdv = getInt('write_detail_val') || 0;
-  const writeRate = wp === 'streaming' ? wdv : 0;
-  const batchSize = wp === 'batch' ? wdv : 0;
-  const p99 = getInt('p99_latency_ms');
-  const topK = getInt('top_k');
   const recallPct = getFloat('recall_target');
-  const recall = recallPct > 1 ? recallPct / 100 : recallPct;
-  const datasetName = document.getElementById('dataset_name').value.trim() || 'unnamed';
 
-  // Run pipeline
-  const emb = classifyEmbeddings(embType, dims);
-  const rec = recallRegime(recall, emb.cls);
-  const hnsw = hnswParams(rec.regime, topK, rec.quant, wp);
-  const lat = latencyAssess(p99, rec.quant);
-  const mem = sizeMemory(nv, dims, rec.quant, hnsw, lat);
-  const disk = sizeDisk(nv, dims, mem, wp, writeRate, batchSize, lat);
-  const comp = sizeCompute(dims, rec.quant, hnsw, lat, qps, wp, writeRate);
-  const inst = selectInstance(comp, mem, disk);
-  const opts = futureOpts(emb, rec, hnsw, lat, dims, topK, wp);
+  const r = sizeCluster({
+    datasetName: document.getElementById('dataset_name').value.trim() || 'unnamed',
+    embeddingType: getRadio('embedding_type'),
+    dimensions: getInt('dimensions'),
+    numVectors: getInt('num_vectors'),
+    peakQPS: getInt('peak_qps'),
+    writePattern: wp,
+    peakWriteRate: wp === 'streaming' ? wdv : 0,
+    batchSize: wp === 'batch' ? wdv : 0,
+    p99LatencyMs: getInt('p99_latency_ms'),
+    recallTarget: recallPct > 1 ? recallPct / 100 : recallPct,
+    topK: getInt('top_k'),
+  });
 
-  lastResult = { datasetName, dims, nv, qps, wp, writeRate, batchSize, p99, topK, recall,
-                 emb, rec, hnsw, lat, mem, disk, comp, inst, opts };
+  // Flatten for renderer compatibility
+  lastResult = {
+    datasetName: r.datasetName, dims: r.dimensions, nv: r.numVectors,
+    qps: r.peakQPS, wp: r.writePattern, writeRate: r.peakWriteRate,
+    batchSize: r.batchSize, p99: r.p99LatencyMs, topK: r.topK,
+    recall: r.recallTarget,
+    emb: r.classification,
+    rec: r.recall,
+    hnsw: { m: r.hnsw.m, efC: r.hnsw.efConstruct, ef: r.hnsw.hnswEf,
+            efNote: r.hnsw.efNote, os: r.hnsw.oversampling, rc: r.hnsw.rescoreCandidates },
+    lat: { tier: r.latency.tier, hP: r.latency.hnswPlacement,
+           qP: r.latency.quantPlacement, fP: r.latency.fullPlacement,
+           promoted: r.latency.promoted },
+    mem: { quantMB: r.memory.quantMB, fullMB: r.memory.fullMB, hnswMB: r.memory.hnswMB,
+           pageCacheMB: r.memory.pageCacheMB, overheadMB: r.memory.processOverheadMB,
+           mergeMB: r.memory.mergeHeadroomMB, totalMB: r.memory.totalMB, roundedGB: r.memory.roundedGB },
+    disk: { totalGB: r.disk.totalGB, diskType: r.disk.diskType },
+    comp: { pqTime: r.compute.perQueryMs, pqBase: r.compute.perQueryBaseMs,
+            efAdj: r.compute.efAdjustment, rescoreMs: r.compute.rescoreMs,
+            mmapOH: r.compute.mmapOverheadMs, cores: r.compute.coresForQueries,
+            headPct: r.compute.headroomPct, headCores: r.compute.headroomCores,
+            writeCores: r.compute.writeCores, total: r.compute.totalVcpus },
+    inst: { name: r.instance.instanceType, vcpus: r.instance.instanceVcpus,
+            ram: r.instance.instanceRamGB, familyLabel: r.instance.instanceFamily,
+            constraint: r.instance.dominantConstraint,
+            onDemand: r.instance.costOnDemandMo, reserved: r.instance.costReservedMo,
+            note: r.instance.overprovisionNote },
+    opts: r.optimizations,
+  };
 
   renderResults(lastResult);
   showStep(4);
 }
+
+// Expose functions to onclick handlers (module scope doesn't auto-expose to global)
+window.next = next;
+window.prev = prev;
+window.restart = restart;
+window.calculate = calculate;
+window.copyResults = copyResults;
 
 // ---------------------------------------------------------------------------
 // Render results
