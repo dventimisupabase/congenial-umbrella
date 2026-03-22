@@ -10,13 +10,13 @@ Two teams require dedicated Qdrant deployments for 1M-vector workloads with fund
 
 **Workload profile:** OpenAI `text-embedding-3-large` over DBpedia, 3072 dimensions, 1M vectors, cosine similarity. Real-time search with streaming ingestion.
 
-| Parameter | Value | Rationale |
-|-----------|-------|-----------|
-| Recall target | 95% | Production search -- good-enough ranking, not research-grade |
-| Top-k | 100 | Deep result pages / downstream re-ranking |
-| QPS | 1,000 | Sustained production traffic |
-| P99 latency | 50 ms | Tight SLA for user-facing search |
-| Write rate | 200 vec/s | Continuous streaming ingestion |
+| Parameter     | Value     | Rationale                                                    |
+|---------------|-----------|--------------------------------------------------------------|
+| Recall target | 95%       | Production search -- good-enough ranking, not research-grade |
+| Top-k         | 100       | Deep result pages / downstream re-ranking                    |
+| QPS           | 1,000     | Sustained production traffic                                 |
+| P99 latency   | 50 ms     | Tight SLA for user-facing search                             |
+| Write rate    | 200 vec/s | Continuous streaming ingestion                               |
 
 ### Why Scalar Quantization Works Here
 
@@ -79,13 +79,13 @@ The 1-vCPU shortfall (17 required vs 16 available) is within acceptable headroom
 
 **Workload profile:** GIST-960 features, 960 dimensions, 1M vectors, Euclidean (L2) distance. Burst-heavy batch analytics with nightly bulk loads.
 
-| Parameter | Value | Rationale |
-|-----------|-------|-----------|
-| Recall target | 99% | Research-grade nearest-neighbor accuracy |
-| Top-k | 10 | Precise neighbor identification |
-| QPS | 3,000 | 6-hour burst windows (e.g., model evaluation) |
-| P99 latency | 500 ms | Relaxed -- batch analytics, not user-facing |
-| Write rate | 100K nightly | Bulk upsert, not continuous |
+| Parameter     | Value        | Rationale                                     |
+|---------------|--------------|-----------------------------------------------|
+| Recall target | 99%          | Research-grade nearest-neighbor accuracy      |
+| Top-k         | 10           | Precise neighbor identification               |
+| QPS           | 3,000        | 6-hour burst windows (e.g., model evaluation) |
+| P99 latency   | 500 ms       | Relaxed -- batch analytics, not user-facing   |
+| Write rate    | 100K nightly | Bulk upsert, not continuous                   |
 
 ### Why Quantization Does NOT Work Here
 
@@ -156,12 +156,12 @@ A reasonable assumption is that 960-dimensional vectors should require "signific
 
 ### Vector RAM: Quantization Eligibility Inverts the Size Relationship
 
-| | Scenario 1 (3072d) | Scenario 2 (960d) |
-|---|---|---|
-| Raw vector size | 12,288 bytes | 3,840 bytes |
-| Quantization | Scalar int8 (4x compression) | None (float32) |
-| **In-RAM per vector** | **3,072 bytes** | **3,840 bytes** |
-| **Total vector RAM** | **2.9 GB** | **3.7 GB** |
+|                       | Scenario 1 (3072d)           | Scenario 2 (960d) |
+|-----------------------|------------------------------|-------------------|
+| Raw vector size       | 12,288 bytes                 | 3,840 bytes       |
+| Quantization          | Scalar int8 (4x compression) | None (float32)    |
+| **In-RAM per vector** | **3,072 bytes**              | **3,840 bytes**   |
+| **Total vector RAM**  | **2.9 GB**                   | **3.7 GB**        |
 
 The "smaller" embedding needs **27% more vector RAM** because it cannot be quantized.
 
@@ -173,21 +173,21 @@ The root cause is not the vectors themselves but the interaction of three factor
 
 ### CPU: QPS Dominates, Not Vector Size
 
-| | Scenario 1 (3072d) | Scenario 2 (960d) |
-|---|---|---|
-| QPS | 1,000 | 3,000 |
-| Per-query time | 8.25 ms | 4.0 ms |
-| **Core demand** | **8.25 cores** | **12.0 cores** |
+|                 | Scenario 1 (3072d) | Scenario 2 (960d) |
+|-----------------|--------------------|-------------------|
+| QPS             | 1,000              | 3,000             |
+| Per-query time  | 8.25 ms            | 4.0 ms            |
+| **Core demand** | **8.25 cores**     | **12.0 cores**    |
 
 Despite each Scenario 1 query being ~2x more expensive (longer vectors, rescore pass), Scenario 2's 3x QPS requirement more than compensates.
 
 ### Bottom Line
 
-| | Scenario 1 | Scenario 2 |
-|---|---|---|
-| Instance | c6i.4xlarge | c6i.4xlarge |
-| On-demand cost | ~$500/mo | ~$499/mo |
-| Reserved cost | ~$326/mo | ~$325/mo |
+|                | Scenario 1  | Scenario 2  |
+|----------------|-------------|-------------|
+| Instance       | c6i.4xlarge | c6i.4xlarge |
+| On-demand cost | ~$500/mo    | ~$499/mo    |
+| Reserved cost  | ~$326/mo    | ~$325/mo    |
 
 **Same instance class. Same cost.** Dimensionality is a poor proxy for infrastructure cost. What matters is the interaction of quantization eligibility, recall requirements, and throughput demands.
 
@@ -295,23 +295,37 @@ Despite each Scenario 1 query being ~2x more expensive (longer vectors, rescore 
 
 ---
 
-## 6. Benchmark Validation Plan
+## 6. Benchmark Results
 
-> *This section will be updated with empirical data from `qdrant_benchmark.py`.*
+Benchmarks run on a local Docker instance with 10% of each dataset (100,000 vectors), using `qdrant_benchmark.py`. These validate the analytical priors from Sections 2-3.
 
-The sizing numbers above are **analytical priors** derived from the HNSW complexity model, published Qdrant benchmarks, and hardware specs. They must be validated against the actual datasets.
+### Results
 
-### Metrics to Capture
+| Metric           | Scenario 1 (dbpedia)   | Target     | Scenario 2 (gist-960) | Target     |
+|------------------|------------------------|------------|------------------------|------------|
+| **Recall@k**     | **99.97% @100**        | >= 95%     | **99.86% @10**         | >= 99%     |
+| P50 latency      | 7.52 ms                | —          | 4.07 ms                | —          |
+| P99 latency      | 9.74 ms                | <= 50 ms   | 6.03 ms                | <= 500 ms  |
+| Est. QPS         | 129 (single-threaded)  | 1,000      | 241 (single-threaded)  | 3,000      |
+| Test vectors     | 100,000                | 1,000,000  | 100,000                | 1,000,000  |
 
-| Metric | Scenario 1 Target | Scenario 2 Target |
-|--------|-------------------|-------------------|
-| Recall@k | >= 0.95 @ k=100 | >= 0.99 @ k=10 |
-| P99 latency | <= 50 ms | <= 500 ms |
-| Sustained QPS | >= 1,000 | >= 3,000 (6hr burst) |
-| Write throughput | >= 200 vec/s streaming | >= 100K/batch (nightly) |
-| Peak RSS | <= 8 GB | <= 8 GB |
+**Key findings:**
 
-### Tuning Levers if Targets Miss
+1. **Both recall targets are met with significant margin.** Scalar quantization + rescoring on dbpedia delivers 99.97% recall against a 95% target. Full float32 on gist-960 delivers 99.86% against a 99% target. This validates both the quantization strategy and the HNSW parameter choices.
+
+2. **Latency is well within budget.** P99 of 9.74ms (dbpedia) and 6.03ms (gist-960) are far below the 50ms and 500ms SLAs respectively. This is on a single-threaded laptop — production hardware with parallelism will only improve these numbers.
+
+3. **QPS scales with parallelism.** The single-threaded estimates (129 and 241 QPS) will scale roughly linearly with available cores. On a c6i.4xlarge (16 vCPUs), the expected QPS at full parallelism would comfortably exceed both the 1,000 and 3,000 QPS targets.
+
+4. **Recall margin suggests optimization opportunity.** dbpedia's 99.97% recall vs. 95% target means we could reduce `hnsw_ef` or `oversampling` to lower latency and increase QPS, trading unnecessary recall for throughput. This is a production tuning lever — the starting architecture is deliberately conservative.
+
+### What These Results Do NOT Test
+
+- **Full-scale performance at 1M vectors.** Recall typically degrades slightly as dataset size increases. A 10% sample provides confidence but is not a substitute for a full-scale benchmark on the trial cluster.
+- **Concurrent load under target QPS.** Single-threaded sequential queries do not model queueing effects, write contention, or GC pauses at 1,000-3,000 QPS.
+- **Disk I/O under load.** The local Docker test uses local SSD, not gp3 with provisioned IOPS. Rescore latency for Scenario 1 will be higher on cloud storage.
+
+### Tuning Levers if Full-Scale Targets Miss
 
 - **Recall too low (Sc. 1):** Increase `oversampling` from 2.0 to 3.0; increase `hnsw_ef` to 256.
 - **Recall too low (Sc. 2):** Increase `hnsw_ef` from 128 to 200; increase `m` to 32 (requires rebuild).
@@ -322,13 +336,13 @@ The sizing numbers above are **analytical priors** derived from the HNSW complex
 
 ## 7. Cost Summary
 
-| | Scenario 1: Search Team | Scenario 2: Data Science Team |
-|---|---|---|
-| Instance | c6i.4xlarge (16 vCPU, 32 GB) | c6i.4xlarge (16 vCPU, 32 GB) |
-| Storage | 39 GB gp3 + provisioned IOPS | 30 GB gp3 (baseline) |
-| On-demand | ~$500/mo | ~$499/mo |
-| 1-yr reserved (no upfront) | ~$326/mo | ~$325/mo |
-| HA option (2nd replica) | +$326-500/mo | +$325-499/mo |
+|                            | Scenario 1: Search Team      | Scenario 2: Data Science Team |
+|----------------------------|------------------------------|-------------------------------|
+| Instance                   | c6i.4xlarge (16 vCPU, 32 GB) | c6i.4xlarge (16 vCPU, 32 GB)  |
+| Storage                    | 39 GB gp3 + provisioned IOPS | 30 GB gp3 (baseline)          |
+| On-demand                  | ~$500/mo                     | ~$499/mo                      |
+| 1-yr reserved (no upfront) | ~$326/mo                     | ~$325/mo                      |
+| HA option (2nd replica)    | +$326-500/mo                 | +$325-499/mo                  |
 
 **Combined monthly cost (reserved, no HA):** ~$651/mo for both teams.
 
@@ -336,4 +350,4 @@ These are single-node estimates. Production HA (replication factor 2) doubles th
 
 ---
 
-*Prepared as part of the Qdrant Senior Solutions Architect take-home challenge. All sizing derived from first-principles analysis; benchmark validation pending.*
+*Prepared as part of the Qdrant Senior Solutions Architect take-home challenge. Sizing derived from first-principles analysis; validated against 100K-vector benchmarks on local Docker. Full-scale 1M-vector validation pending on Qdrant Cloud trial cluster.*
