@@ -158,10 +158,7 @@ You need these values before you can size memory or compute, so set them now.
 
 ### Step 3a: Choose m
 
-```text
-Qdrant parameter: hnsw_config.m (set at collection creation)
-Qdrant default: 16
-```
+**Qdrant parameter:** `hnsw_config.m` (set at collection creation) — **Default:** 16
 
 | RECALL REGIME | m | RULE |
 |---------------|---|------|
@@ -169,26 +166,41 @@ Qdrant default: 16
 | MODERATE | 20 | Fixed. |
 | STRICT | 32 | Fixed. |
 
-```text
-Top-k adjustment: large top-k values require denser graph connectivity
-because the search must find more true neighbors, not just the closest one.
-  If top_k >= 50:  increase m by one tier
-    RELAXED 16 -> 20,  MODERATE 20 -> 28,  STRICT stays at 32
-  If top_k <= 20:  decrease m by one tier (minimum m=16)
-    STRICT 32 -> 24,   MODERATE 20 -> 16,  RELAXED stays at 16
+```mermaid
+flowchart TD
+    Start{"top_k value?"} -->|">= 50"| High["Increase m by one tier\n(denser graph needed for large result sets)"]
+    Start -->|"21 - 49"| Mid["Keep m as-is"]
+    Start -->|"<= 20"| Low["Decrease m by one tier\n(minimum m = 16)"]
 
-Rarely go above 32 — diminishing returns.
+    High --> H_R["RELAXED: 16 -> 20"]
+    High --> H_M["MODERATE: 20 -> 28"]
+    High --> H_S["STRICT: stays at 32"]
+
+    Low --> L_S["STRICT: 32 -> 24"]
+    Low --> L_M["MODERATE: 20 -> 16"]
+    Low --> L_R["RELAXED: stays at 16"]
+
+    Mid --> Note["Rarely go above 32\ndiminishing returns"]
+
+    style Start fill:#18181b,stroke:#3f3f46,color:#e4e4e7
+    style High fill:#422006,stroke:#f59e0b,color:#fde68a
+    style Mid fill:#14532d,stroke:#22c55e,color:#86efac
+    style Low fill:#1e3a5f,stroke:#3b82f6,color:#93c5fd
+    style H_R fill:#27272a,stroke:#3f3f46,color:#a1a1aa
+    style H_M fill:#27272a,stroke:#3f3f46,color:#a1a1aa
+    style H_S fill:#27272a,stroke:#3f3f46,color:#a1a1aa
+    style L_S fill:#27272a,stroke:#3f3f46,color:#a1a1aa
+    style L_M fill:#27272a,stroke:#3f3f46,color:#a1a1aa
+    style L_R fill:#27272a,stroke:#3f3f46,color:#a1a1aa
+    style Note fill:#27272a,stroke:#3f3f46,color:#a1a1aa
 ```
 
 ### Step 3b: Choose ef_construct
 
-```text
-Qdrant parameter: hnsw_config.ef_construct (set at collection creation)
-Qdrant default: 100
+**Qdrant parameter:** `hnsw_config.ef_construct` (set at collection creation) — **Default:** 100
 
 ef_construct only affects index build time, not query time or RAM.
 You pay this cost once.
-```
 
 | RECALL REGIME | ef_construct | RULE |
 |---------------|-------------|------|
@@ -196,12 +208,17 @@ You pay this cost once.
 | MODERATE | 256 | Fixed. |
 | STRICT | 400 | Fixed. Go to 512 only if benchmarks show recall is still below target after tuning ef. |
 
-```text
-Exception: if your write pattern is BATCH (no concurrent reads during
-writes), use 400 for STRICT regardless. The extra build time costs
-nothing when there are no queries to slow down. (400 is sufficient
-for 99% recall; 512 is available as a benchmark-driven escalation
-if recall falls short.)
+```mermaid
+flowchart TD
+    Q{"Write pattern is BATCH?\n(no concurrent reads during writes)"} -->|"YES"| Use400["Use ef_construct = 400\nfor STRICT regardless"]
+    Q -->|"NO"| Keep["Keep ef_construct\nfrom table above"]
+
+    Use400 --> Note["Extra build time costs nothing\nwhen there are no queries to slow down\n(400 sufficient for 99% recall;\n512 available as benchmark-driven escalation)"]
+
+    style Q fill:#18181b,stroke:#3f3f46,color:#e4e4e7
+    style Use400 fill:#14532d,stroke:#22c55e,color:#86efac
+    style Keep fill:#27272a,stroke:#3f3f46,color:#a1a1aa
+    style Note fill:#27272a,stroke:#3f3f46,color:#a1a1aa
 ```
 
 ### Step 3c: Choose hnsw_ef (search-time) — PRELIMINARY
@@ -209,12 +226,10 @@ if recall falls short.)
 Set a starting value now for compute estimation. You will refine this during
 benchmarking.
 
-```text
-Qdrant parameter: search_params.hnsw_ef (set per-query, not at collection level)
-  Example: client.query_points(..., search_params={"hnsw_ef": 200})
+**Qdrant parameter:** `search_params.hnsw_ef` (set per-query, not at collection level)
+Example: `client.query_points(..., search_params={"hnsw_ef": 200})`
 
 hnsw_ef must be >= top_k (hard constraint)
-```
 
 | RECALL REGIME | STARTING hnsw_ef | RULE |
 |---------------|-----------------|------|
@@ -222,48 +237,50 @@ hnsw_ef must be >= top_k (hard constraint)
 | MODERATE | 3x top_k | Fixed multiplier. |
 | STRICT | 6x top_k | Fixed multiplier. |
 
-```text
-Apply floor based on recall regime:
-  RELAXED:   hnsw_ef = max(calculated_ef, 64)
-  MODERATE:  hnsw_ef = max(calculated_ef, 64)
-  STRICT:    hnsw_ef = max(calculated_ef, 128)
+```mermaid
+flowchart TD
+    Calc["calculated_ef = multiplier x top_k"] --> Floor{"Apply floor by regime"}
 
-The floor ensures a minimum search width. Small top_k values (e.g., 10)
-produce calculated ef values too low for effective graph traversal,
-especially at STRICT recall targets where the graph must be explored
-thoroughly. Use the floor-adjusted ef value (not the calculated value)
-for all subsequent stages including compute estimation in Stage 7a.
+    Floor -->|"RELAXED"| FR["hnsw_ef = max(calculated_ef, 64)"]
+    Floor -->|"MODERATE"| FM["hnsw_ef = max(calculated_ef, 64)"]
+    Floor -->|"STRICT"| FS["hnsw_ef = max(calculated_ef, 128)"]
 
-NOTE: Qdrant also has full_scan_threshold (default 10000 KB). If a
-segment is smaller than this, Qdrant uses brute-force scan instead of
-HNSW. This is relevant for streaming writes: newly ingested vectors in
-small mutable segments are searched via brute force, not HNSW. This is
-fast for small segments (<20K vectors) and the hnsw_ef parameter does
-not apply to them.
+    FR --> Use["Use floor-adjusted ef\nfor all subsequent stages\nincluding compute estimation (Stage 7a)"]
+    FM --> Use
+    FS --> Use
 
-hnsw_ef is your primary runtime tuning knob. After benchmarking:
-  - If recall is below target: increase hnsw_ef.
-  - If latency is above SLA: decrease hnsw_ef (and accept lower recall,
-    or improve quantization/graph quality instead).
+    Use --> Tune["hnsw_ef is your primary runtime tuning knob:\n- Recall below target: increase hnsw_ef\n- Latency above SLA: decrease hnsw_ef"]
+
+    Use --> FST["NOTE: Qdrant full_scan_threshold\n(default 10000 KB) — segments smaller\nthan this use brute-force scan, not HNSW.\nSmall mutable segments from streaming\nwrites (<20K vectors) are searched\nvia brute force; hnsw_ef does not apply."]
+
+    style Calc fill:#18181b,stroke:#3f3f46,color:#e4e4e7
+    style Floor fill:#18181b,stroke:#3f3f46,color:#e4e4e7
+    style FR fill:#14532d,stroke:#22c55e,color:#86efac
+    style FM fill:#422006,stroke:#f59e0b,color:#fde68a
+    style FS fill:#3b1f1f,stroke:#ef4444,color:#fca5a5
+    style Use fill:#27272a,stroke:#3f3f46,color:#a1a1aa
+    style Tune fill:#1e3a5f,stroke:#3b82f6,color:#93c5fd
+    style FST fill:#27272a,stroke:#3f3f46,color:#a1a1aa
 ```
 
 ### Step 3d: Choose Oversampling (if quantizing)
 
-```text
-Qdrant parameter: search_params.quantization.oversampling (set per-query)
-  Must be paired with: search_params.quantization.rescore = true
-  Example:
-    client.query_points(..., search_params={
-      "hnsw_ef": 200,
-      "quantization": {"rescore": true, "oversampling": 2.0}
-    })
+**Qdrant parameter:** `search_params.quantization.oversampling` (set per-query)
+Must be paired with: `search_params.quantization.rescore = true`
 
-  NOTE: Qdrant also supports quantization.ignore = true to bypass
-  quantization entirely for a specific query (uses full vectors).
+Example:
+```text
+client.query_points(..., search_params={
+  "hnsw_ef": 200,
+  "quantization": {"rescore": true, "oversampling": 2.0}
+})
+```
+
+> **NOTE:** Qdrant also supports `quantization.ignore = true` to bypass
+> quantization entirely for a specific query (uses full vectors).
 
 Only applies when using quantization + rescoring from Stage 2.
 If your quantization method is "None," skip this step.
-```
 
 | QUANTIZATION | RECALL REGIME | OVERSAMPLING FACTOR |
 |-------------|---------------|---------------------|
@@ -271,9 +288,7 @@ If your quantization method is "None," skip this step.
 | Scalar | MODERATE | 2.5x |
 | Scalar | STRICT | 4.0x |
 
-```text
 If exploring binary quantization as a future optimization (see Stage 2 NOTE):
-```
 
 | QUANTIZATION | RECALL REGIME | OVERSAMPLING FACTOR |
 |-------------|---------------|---------------------|
@@ -358,19 +373,16 @@ Qdrant implementation:
 
 ### Step 5a: Vector Memory
 
-```text
-Pick your quantization strategy from Stage 2 and calculate:
+```mermaid
+flowchart TD
+    Q{"Quantization strategy\n(from Stage 2)?"} -->|"NO QUANTIZATION\n(float32)"| NoQ["vector_memory =\nnum_vectors x dimensions x 4 bytes"]
+    Q -->|"SCALAR\n(int8)"| Scalar["quantized_memory =\nnum_vectors x dimensions x 1 byte\n\nfull_vector_memory =\nnum_vectors x dimensions x 4 bytes\n(for rescore, may be on disk)"]
+    Q -->|"BINARY\n(1-bit)"| Binary["quantized_memory =\nnum_vectors x dimensions / 8\n\nfull_vector_memory =\nnum_vectors x dimensions x 4 bytes\n(for rescore, may be on disk)"]
 
-NO QUANTIZATION (float32):
-  vector_memory = num_vectors x dimensions x 4 bytes
-
-SCALAR QUANTIZATION (int8):
-  quantized_memory = num_vectors x dimensions x 1 byte
-  full_vector_memory = num_vectors x dimensions x 4 bytes  (for rescore, may be on disk)
-
-BINARY QUANTIZATION (1-bit):
-  quantized_memory = num_vectors x dimensions / 8
-  full_vector_memory = num_vectors x dimensions x 4 bytes  (for rescore, may be on disk)
+    style Q fill:#18181b,stroke:#3f3f46,color:#e4e4e7
+    style NoQ fill:#14532d,stroke:#22c55e,color:#86efac
+    style Scalar fill:#1e3a5f,stroke:#3b82f6,color:#93c5fd
+    style Binary fill:#422006,stroke:#f59e0b,color:#fde68a
 ```
 
 ### Step 5b: HNSW Index Memory
@@ -397,26 +409,18 @@ Common values (per 1M vectors):
 
 ### Step 5c: Page Cache Budget
 
-```text
-If any component is placed on mmap (from Stage 4 Storage Placement Table),
-the OS uses page cache to keep frequently accessed pages in RAM. Budget
-for this explicitly.
+```mermaid
+flowchart TD
+    Q{"Which components\nare on mmap?"} -->|"Full vectors on mmap\nWITH quantization\n(rescore path only)"| A["page_cache =\n0.10 x full_vector_memory\n\n(10% — rescoring accesses a small,\nsomewhat random subset per query)"]
+    Q -->|"Full vectors on mmap\nWITHOUT quantization\n(every search reads them)"| B["page_cache =\n0.30 x full_vector_memory\n\n(30% — search traversal\nhas some locality)"]
+    Q -->|"Quantized vectors\non mmap"| C["page_cache =\n0.50 x quantized_memory\n\n(50% — quantized vectors are\nsmall and heavily accessed)"]
+    Q -->|"Everything in RAM\n(no mmap components)"| D["page_cache = 0"]
 
-For full vectors on mmap (with quantization — rescore path only):
-  page_cache = 0.10 x full_vector_memory
-  (10% cache hit rate is usually sufficient because rescoring accesses
-  a small, somewhat random subset of vectors per query)
-
-For full vectors on mmap (WITHOUT quantization — every search reads them):
-  page_cache = 0.30 x full_vector_memory
-  (30% — higher because search traversal has some locality)
-
-For quantized vectors on mmap:
-  page_cache = 0.50 x quantized_memory
-  (50% — quantized vectors are small and heavily accessed)
-
-If everything is in RAM (no mmap components):
-  page_cache = 0
+    style Q fill:#18181b,stroke:#3f3f46,color:#e4e4e7
+    style A fill:#14532d,stroke:#22c55e,color:#86efac
+    style B fill:#422006,stroke:#f59e0b,color:#fde68a
+    style C fill:#1e3a5f,stroke:#3b82f6,color:#93c5fd
+    style D fill:#27272a,stroke:#3f3f46,color:#a1a1aa
 ```
 
 ### Step 5d: Process Overhead
@@ -580,32 +584,33 @@ Examples:
 
 **Step 3: Add rescoring cost (if quantizing).**
 
-```text
-If using quantization with rescoring:
-  rescore_candidates = oversampling_factor x top_k  (from Stage 3d)
+```mermaid
+flowchart TD
+    Q{"Using quantization\nwith rescoring?"} -->|"YES"| Rescore["rescore_candidates =\noversampling_factor x top_k\n(from Stage 3d)"]
+    Q -->|"NO (no quant)"| NoRescore["rescore_time = 0"]
 
-  If full vectors are in RAM:
-    rescore_time = rescore_candidates x dimensions x 4 bytes / 10_000_000_000
-    (Rough model: 10 GB/s effective throughput for in-RAM float32 dot products)
-    In practice this is <0.1ms for most configurations. Use 0.1ms as floor.
+    Rescore --> Where{"Full vectors\nstored where?"}
+    Where -->|"In RAM"| RAM["rescore_time =\nrescore_candidates x dims x 4 bytes\n/ 10,000,000,000\n\n(~10 GB/s effective throughput\nfor in-RAM float32 dot products)\nFloor: 0.1ms"]
+    Where -->|"On mmap (disk)"| Disk["rescore_time =\nrescore_candidates x 0.01ms\n\n(per-candidate disk read + compute)\nExample: 200 candidates x 0.01ms = 2.0ms"]
 
-  If full vectors are on mmap (disk):
-    rescore_time = rescore_candidates x 0.01ms  (per-candidate disk read + compute)
-    Example: 200 candidates x 0.01ms = 2.0ms
-
-If NOT using quantization (no rescore step):
-  rescore_time = 0
+    style Q fill:#18181b,stroke:#3f3f46,color:#e4e4e7
+    style Rescore fill:#27272a,stroke:#3f3f46,color:#a1a1aa
+    style NoRescore fill:#14532d,stroke:#22c55e,color:#86efac
+    style Where fill:#18181b,stroke:#3f3f46,color:#e4e4e7
+    style RAM fill:#1e3a5f,stroke:#3b82f6,color:#93c5fd
+    style Disk fill:#422006,stroke:#f59e0b,color:#fde68a
 ```
 
 **Step 4: Add mmap overhead (if applicable).**
 
-```text
-If full vectors are on mmap AND no quantization (every search reads disk):
-  mmap_overhead = 1.0ms
-  (Random I/O pattern during graph traversal; page cache helps but misses add up)
+```mermaid
+flowchart TD
+    Q{"Full vectors on mmap\nAND no quantization?\n(every search reads disk)"} -->|"YES"| Add["mmap_overhead = 1.0ms\n\n(Random I/O pattern during graph traversal;\npage cache helps but misses add up)"]
+    Q -->|"NO"| None["mmap_overhead = 0"]
 
-Otherwise:
-  mmap_overhead = 0
+    style Q fill:#18181b,stroke:#3f3f46,color:#e4e4e7
+    style Add fill:#422006,stroke:#f59e0b,color:#fde68a
+    style None fill:#14532d,stroke:#22c55e,color:#86efac
 ```
 
 **Step 5: Total per-query time.**
@@ -618,40 +623,38 @@ per_query_time = per_query_base + rescore_time + mmap_overhead
 
 ```text
 cores_for_queries = target_QPS x per_query_time_seconds
+```
 
 Then add headroom based on latency tier and write pattern:
 
-  If TIGHT latency tier AND STREAMING writes:
-    headroom_cores = cores_for_queries x 1.0  (100% headroom)
-    (Streaming writes cause segment merges and lock contention that
-    amplify tail latency. The tight P99 budget leaves no room for
-    write-induced spikes. This is the single largest source of
-    expert variance — production systems consistently need more
-    headroom here than steady-state math suggests.)
+```mermaid
+flowchart TD
+    Q{"Latency tier?"} -->|"TIGHT"| Tight{"Write pattern?"}
+    Q -->|"MODERATE, RELAXED,\nor ULTRA-TIGHT"| Other["headroom = 30%\nheadroom_cores = cores_for_queries x 0.30"]
 
-  If TIGHT latency tier AND BATCH/STATIC writes:
-    headroom_cores = cores_for_queries x 0.50  (50% headroom)
+    Tight -->|"STREAMING"| TS["headroom = 100%\nheadroom_cores = cores_for_queries x 1.0\n\n(Streaming writes cause segment merges\nand lock contention that amplify tail latency.\nTight P99 budget leaves no room for\nwrite-induced spikes.)"]
+    Tight -->|"BATCH / STATIC"| TB["headroom = 50%\nheadroom_cores = cores_for_queries x 0.50"]
 
-  Otherwise (MODERATE, RELAXED, ULTRA-TIGHT):
-    headroom_cores = cores_for_queries x 0.30  (30% headroom)
+    style Q fill:#18181b,stroke:#3f3f46,color:#e4e4e7
+    style Tight fill:#18181b,stroke:#3f3f46,color:#e4e4e7
+    style TS fill:#3b1f1f,stroke:#ef4444,color:#fca5a5
+    style TB fill:#422006,stroke:#f59e0b,color:#fde68a
+    style Other fill:#14532d,stroke:#22c55e,color:#86efac
+```
 
 This headroom covers: GC pauses, OS scheduling, background tasks,
 and the gap between average and P99 query times.
-```
 
 ### Step 7c: Account for Write Load
 
-```text
-If concurrent reads + writes (STREAMING pattern):
-  Indexing time per vector (use these fixed values):
-    m=12: 1.0ms    m=16: 1.5ms    m=20: 2.5ms
-    m=28: 3.5ms    m=32: 4.0ms
+```mermaid
+flowchart TD
+    Q{"Write pattern?"} -->|"STREAMING\n(concurrent reads + writes)"| Stream["Look up indexing time per vector by m:\n\nm=12: 1.0ms   m=16: 1.5ms   m=20: 2.5ms\nm=28: 3.5ms   m=32: 4.0ms\n\nwrite_cores =\npeak_write_rate x indexing_time_per_vector_seconds"]
+    Q -->|"BATCH\n(no concurrent reads)"| Batch["write_cores = 0\n\nSize for peak read QPS only.\nWrites use the same cores during off-peak."]
 
-  write_cores = peak_write_rate x indexing_time_per_vector_seconds
-
-If batch writes (no concurrent reads):
-  write_cores = 0
-  Size for peak read QPS only. Writes use the same cores during off-peak.
+    style Q fill:#18181b,stroke:#3f3f46,color:#e4e4e7
+    style Stream fill:#1e3a5f,stroke:#3b82f6,color:#93c5fd
+    style Batch fill:#14532d,stroke:#22c55e,color:#86efac
 ```
 
 ### Step 7d: Total vCPUs
@@ -780,31 +783,35 @@ From your calculations:
   - disk_type (Stage 6e)
 ```
 
-| Constraint | Instance Family | AWS Examples | GCP Examples | Azure Examples |
-|------------|----------------|-------------|-------------|----------------|
-| Memory-bound (total_ram > total_vcpus x 4 GB) | R-series (memory-optimized) | r6i, r7i | n2-highmem | E-series |
-| Compute-bound (total_vcpus x 4 GB > total_ram) | C-series (compute-optimized) | c6i, c7i | c3 | F-series |
-| Roughly balanced | M-series (general-purpose) | m6i, m7i | n2-standard | D-series |
+```mermaid
+flowchart TD
+    Q{"Dominant constraint?"} -->|"total_ram > total_vcpus x 4 GB\n(Memory-bound)"| R["R-series\n(memory-optimized)\n\nAWS: r6i, r7i\nGCP: n2-highmem\nAzure: E-series"]
+    Q -->|"total_vcpus x 4 GB > total_ram\n(Compute-bound)"| C["C-series\n(compute-optimized)\n\nAWS: c6i, c7i\nGCP: c3\nAzure: F-series"]
+    Q -->|"Roughly balanced"| M["M-series\n(general-purpose)\n\nAWS: m6i, m7i\nGCP: n2-standard\nAzure: D-series"]
 
-```text
-Pick the smallest instance in that family where:
-  instance_vcpus >= total_vcpus
-  instance_ram >= total_ram
-  instance can attach the required disk type and size
+    R --> Pick["Pick smallest instance where:\ninstance_vcpus >= total_vcpus\ninstance_ram >= total_ram\ncan attach required disk type/size"]
+    C --> Pick
+    M --> Pick
 
-Overprovision check: if the selected instance has > 1.5x your total_vcpus,
-consider the next smaller instance instead. A shortfall of 1-2 vCPUs is
-acceptable for an initial estimate — the headroom built into Stage 7 already
-accounts for burst capacity. Example: if total_vcpus = 17 and choices are
-c6i.4xlarge (16 vCPU) or c6i.8xlarge (32 vCPU), use c6i.4xlarge. The 1 vCPU
-shortfall is within the headroom margin; 32 vCPU would be a 88% overprovision.
+    Pick --> Over{"Selected instance has\n> 1.5x your total_vcpus?"}
+    Over -->|"YES"| Down["Consider next smaller instance\n\n1-2 vCPU shortfall is acceptable —\nStage 7 headroom already covers burst.\nExample: total_vcpus=17, choices are\nc6i.4xlarge (16) vs c6i.8xlarge (32)\n→ use c6i.4xlarge (88% overprovision avoided)"]
+    Over -->|"NO"| OK["Instance size is appropriate"]
 
-NVMe disk type note: if Stage 6e requires NVMe SSD but your selected instance
-family does not offer local NVMe (e.g., c6i, m6i, r6i), you have two options:
-  1. Use a high-IOPS EBS volume (io2 or gp3 with provisioned IOPS)
-  2. Switch to an NVMe instance family (i3, i4i, c6id, m6id, r6id)
-For initial estimates, use gp3 with 16,000 IOPS provisioned as the default.
-Flag the NVMe question as a refinement for benchmarking.
+    Pick --> NVMe{"Stage 6e requires NVMe\nbut family lacks local NVMe?"}
+    NVMe -->|"YES"| NVMeOpts["Option 1: High-IOPS EBS volume\n(io2 or gp3 w/ provisioned IOPS)\n\nOption 2: NVMe instance family\n(i3, i4i, c6id, m6id, r6id)\n\nDefault: gp3 with 16,000 IOPS provisioned.\nFlag NVMe as benchmark refinement."]
+    NVMe -->|"NO"| Done["Proceed to cost estimate"]
+
+    style Q fill:#18181b,stroke:#3f3f46,color:#e4e4e7
+    style R fill:#1e3a5f,stroke:#3b82f6,color:#93c5fd
+    style C fill:#422006,stroke:#f59e0b,color:#fde68a
+    style M fill:#14532d,stroke:#22c55e,color:#86efac
+    style Pick fill:#27272a,stroke:#3f3f46,color:#a1a1aa
+    style Over fill:#18181b,stroke:#3f3f46,color:#e4e4e7
+    style Down fill:#422006,stroke:#f59e0b,color:#fde68a
+    style OK fill:#14532d,stroke:#22c55e,color:#86efac
+    style NVMe fill:#18181b,stroke:#3f3f46,color:#e4e4e7
+    style NVMeOpts fill:#27272a,stroke:#3f3f46,color:#a1a1aa
+    style Done fill:#14532d,stroke:#22c55e,color:#86efac
 ```
 
 ### Step 9b: Estimate Monthly Cost
