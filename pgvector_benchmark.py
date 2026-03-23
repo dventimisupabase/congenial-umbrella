@@ -22,6 +22,7 @@ Usage:
 """
 
 import argparse
+import io
 import os
 import sys
 import time
@@ -195,29 +196,75 @@ def load_vectors(cfg, sample_frac):
     return vecs
 
 
-def ingest(conn, cfg, vectors, batch_size=1000):
+def ingest(conn, cfg, vectors, target="local"):
     table = cfg["table"]
     n = len(vectors)
-    print(f"  Ingesting {n} vectors into {table}...")
+
+    # Check how many rows already exist (resume after partial ingest)
+    with conn.cursor() as cur:
+        cur.execute(f"SELECT count(*) FROM {table}")
+        existing = cur.fetchone()[0]
+
+    if existing > 0:
+        print(f"  Resuming ingest: {existing:,} rows already present", flush=True)
+        vectors = vectors[existing:]
+
+    n_total = existing + len(vectors)
+    n_remaining = len(vectors)
+    if n_remaining == 0:
+        print(f"  All {n_total:,} vectors already ingested", flush=True)
+        return conn
+
+    print(f"  Ingesting {n_remaining:,} vectors into {table} via COPY...", flush=True)
 
     t0 = time.time()
-    with conn.cursor() as cur:
-        for i in range(0, n, batch_size):
-            batch = vectors[i : i + batch_size]
-            values = [(v.tolist(),) for v in batch]
-            execute_values(
-                cur,
-                f"INSERT INTO {table} (embedding) VALUES %s",
-                values,
-                template="(%s::vector)",
-            )
-            if (i + batch_size) % 10000 == 0 or i + batch_size >= n:
-                pct = min(100, (i + batch_size) / n * 100)
-                print(f"    {pct:.0f}% ({min(i + batch_size, n)}/{n})")
+    chunk_size = 50000
+    max_retries = 5
+    offset = 0
+
+    while offset < n_remaining:
+        end = min(offset + chunk_size, n_remaining)
+        chunk = vectors[offset:end]
+
+        buf = io.StringIO()
+        for v in chunk:
+            buf.write("[" + ",".join(f"{x:.6f}" for x in v) + "]\n")
+        buf.seek(0)
+
+        for attempt in range(max_retries):
+            try:
+                with conn.cursor() as cur:
+                    cur.copy_expert(
+                        f"COPY {table} (embedding) FROM STDIN WITH (FORMAT text)",
+                        buf,
+                    )
+                break
+            except (psycopg2.OperationalError, psycopg2.errors.ReadOnlySqlTransaction) as e:
+                if attempt < max_retries - 1:
+                    wait = 30 * (attempt + 1)
+                    print(f"    Retry in {wait}s ({attempt + 2}/{max_retries}): {e}", flush=True)
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                    time.sleep(wait)
+                    conn = get_connection(target)
+                    conn.autocommit = True
+                    buf.seek(0)
+                else:
+                    raise
+
+        done = existing + end
+        elapsed_so_far = time.time() - t0
+        rate = end / elapsed_so_far if elapsed_so_far > 0 else 0
+        pct = done / n_total * 100
+        print(f"    {pct:.0f}% ({done:,}/{n_total:,}) — {rate:.0f} vec/s", flush=True)
+        offset = end
 
     elapsed = time.time() - t0
-    rate = n / elapsed if elapsed > 0 else 0
-    print(f"  Ingested {n} vectors in {elapsed:.1f}s ({rate:.0f} vec/s)")
+    rate = n_remaining / elapsed if elapsed > 0 else 0
+    print(f"  Ingested {n_remaining:,} vectors in {elapsed:.1f}s ({rate:.0f} vec/s)")
+    return conn
 
 
 # ---------------------------------------------------------------------------
@@ -362,11 +409,15 @@ def print_results(results):
 # ---------------------------------------------------------------------------
 
 def main():
+    # Ensure real-time output even when piped/redirected
+    sys.stdout.reconfigure(line_buffering=True)
+
     parser = argparse.ArgumentParser(description="pgvector benchmark")
     parser.add_argument("--target", choices=["local", "cloud", "custom"], default="local")
     parser.add_argument("--dataset", choices=["dbpedia", "gist960", "both"], default="both")
     parser.add_argument("--sample", type=float, default=0.01, help="Fraction of dataset to use (0.01 = 1%%)")
     parser.add_argument("--queries", type=int, default=200, help="Number of queries for benchmark")
+    parser.add_argument("--resume", action="store_true", help="Resume ingest without dropping tables")
     args = parser.parse_args()
 
     datasets_to_run = (
@@ -386,8 +437,9 @@ def main():
         print(f"{'='*60}")
 
         vectors = load_vectors(cfg, args.sample)
-        create_table(conn, cfg)
-        ingest(conn, cfg, vectors)
+        if not args.resume:
+            create_table(conn, cfg)
+        conn = ingest(conn, cfg, vectors, target=args.target)
         create_index(conn, cfg)
         results = run_benchmark(conn, cfg, vectors, n_queries=args.queries)
         print_results(results)

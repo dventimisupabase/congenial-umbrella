@@ -317,48 +317,42 @@ Round up to the nearest available instance size.
 
 ---
 
-## Step 8: Instance Selection
+## Step 8: Compute Tier Selection
 
-### RDS for PostgreSQL
+### Supabase Compute Tiers
 
-Managed service with pgvector pre-installed (Aurora and RDS both support it).
+Supabase provides managed PostgreSQL with pgvector pre-installed. Each project runs on a dedicated Postgres instance that can be scaled across these compute tiers:
 
-| Instance | vCPUs | RAM | Hourly | Monthly |
+| Tier | CPU | RAM | Monthly | CPU Type |
 |---|---|---|---|---|
-| db.m6i.large | 2 | 8 GB | $0.171 | ~$125 |
-| db.m6i.xlarge | 4 | 16 GB | $0.342 | ~$250 |
-| db.m6i.2xlarge | 8 | 32 GB | $0.684 | ~$499 |
-| db.m6i.4xlarge | 16 | 64 GB | $1.368 | ~$999 |
-| db.r6i.large | 2 | 16 GB | $0.252 | ~$184 |
-| db.r6i.xlarge | 4 | 32 GB | $0.504 | ~$368 |
-| db.r6i.2xlarge | 8 | 64 GB | $1.008 | ~$736 |
-| db.r6i.4xlarge | 16 | 128 GB | $2.016 | ~$1,472 |
+| Micro | 2-core ARM | 1 GB | ~$10 | Shared |
+| Small | 2-core ARM | 2 GB | ~$15 | Shared |
+| Medium | 2-core ARM | 4 GB | ~$60 | Shared |
+| Large | 2-core ARM | 8 GB | ~$110 | Dedicated |
+| XL | 4-core ARM | 16 GB | ~$210 | Dedicated |
+| 2XL | 8-core ARM | 32 GB | ~$410 | Dedicated |
+| 4XL | 16-core ARM | 64 GB | ~$800 | Dedicated |
+| 8XL | 32-core ARM | 128 GB | ~$1,600 | Dedicated |
+| 12XL | 48-core ARM | 192 GB | ~$2,400 | Dedicated |
+| 16XL | 64-core ARM | 256 GB | ~$3,200 | Dedicated |
 
-**M-series** (general-purpose): balanced compute and memory. Good default.
-**R-series** (memory-optimized): when index + table exceeds M-series RAM. Typical for >5M vectors or high-dimensional embeddings.
-
-### Self-Managed (EC2)
-
-Lower cost, more control. You manage PostgreSQL yourself.
-
-| Instance | vCPUs | RAM | Hourly | Monthly |
-|---|---|---|---|---|
-| c6i.xlarge | 4 | 8 GB | $0.170 | ~$124 |
-| c6i.2xlarge | 8 | 16 GB | $0.340 | ~$248 |
-| c6i.4xlarge | 16 | 32 GB | $0.680 | ~$496 |
-
-**C-series** (compute-optimized): only for QPS-bound workloads where data fits in memory. Not available on RDS.
+**Shared CPU** (Micro–Medium): suitable for development, small datasets, and low-QPS workloads.
+**Dedicated CPU** (Large+): required for production vector search workloads. Consistent performance without noisy-neighbor effects.
 
 ### Selection Logic
 
 ```mermaid
 flowchart TD
-    A[RAM needed vs vCPUs needed] --> B{RAM > vCPU * 8?}
-    B -->|Yes| C[R-series memory-optimized]
-    B -->|No| D{RAM ≤ vCPU * 2?}
-    D -->|Yes| E[C-series compute-optimized EC2 only]
-    D -->|No| F[M-series general-purpose]
+    A[Calculate RAM and vCPU requirements] --> B{Working set fits in RAM?}
+    B -->|No| C[Choose tier with enough RAM]
+    B -->|Yes| D{QPS target met?}
+    D -->|No| E[Choose tier with enough vCPUs]
+    D -->|Yes| F[Smallest tier meeting both constraints]
+    C --> F
+    E --> F
 ```
+
+Pick the smallest Supabase tier where both vCPUs and RAM meet your requirements. For production workloads, start at **Large** or above for dedicated CPU.
 
 ---
 
@@ -368,7 +362,7 @@ flowchart TD
 
 For read-heavy workloads, add read replicas to distribute query load:
 
-- RDS supports up to 5 read replicas with automatic replication
+- Supabase supports read replicas for distributing query load
 - Each replica can serve independent query traffic
 - Near-linear QPS scaling for read-only workloads
 
@@ -393,7 +387,7 @@ CREATE INDEX ON items_p2 USING hnsw (embedding vector_cosine_ops);
 
 ### Connection Pooling
 
-pgvector queries hold connections during search. Use PgBouncer or RDS Proxy for high-concurrency workloads.
+pgvector queries hold connections during search. Supabase includes built-in connection pooling (Supavisor) for high-concurrency workloads.
 
 ---
 

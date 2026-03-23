@@ -1,17 +1,18 @@
 # pgvector Sizing Tools
 
-Interactive sizing wizard and field guide for PostgreSQL + [pgvector](https://github.com/pgvector/pgvector) deployments. Input your workload requirements, get an architecture recommendation with instance selection, PostgreSQL configuration, and generated SQL.
+Interactive sizing wizard and field guide for Supabase + [pgvector](https://github.com/pgvector/pgvector) deployments. Input your workload requirements, get a compute tier recommendation, PostgreSQL configuration, and generated SQL.
 
 ## Tools
 
 | Asset | Description |
 |-------|-------------|
-| [**Sizing Wizard** (web)](https://congenial-umbrella-ashy.vercel.app) | Interactive wizard — input your requirements, get an architecture |
+| [**Landing Page**](https://congenial-umbrella-ashy.vercel.app) | Project overview and links to tools |
+| [**Sizing Wizard**](https://congenial-umbrella-ashy.vercel.app/sizer.html) | Interactive wizard — input your requirements, get an architecture |
 | [**Field Guide**](pgvector-field-guide.md) | Decision-tree reference for sizing any pgvector deployment ([view as styled page](https://congenial-umbrella-ashy.vercel.app/field-guide.html)) |
 
 ## What the Sizer Produces
 
-- **Instance selection**: RDS (M-series, R-series) or self-managed EC2 (C-series) with cost estimates
+- **Compute tier**: Supabase compute tier (Micro through 16XL) with cost estimates
 - **PostgreSQL configuration**: `shared_buffers`, `effective_cache_size`, `maintenance_work_mem`, `work_mem`, parallel workers, and pgvector-specific settings (`hnsw.ef_search` or `ivfflat.probes`)
 - **Index strategy**: HNSW or IVFFlat with tuned parameters based on your recall target
 - **Vector type**: `vector` (float32) or `halfvec` (float16) based on embedding type and recall requirements
@@ -51,8 +52,9 @@ python pgvector_benchmark.py --target cloud --sample 0.05 --dataset both
 
 | File | Role |
 |------|------|
+| `index.html` | Landing page |
+| `sizer.html` | Interactive sizing wizard (imports `sizer_engine.js`) |
 | `sizer_engine.js` | Core sizing logic (ES module) — all constants, decision tables, and pipeline |
-| `index.html` | Interactive web wizard that imports `sizer_engine.js` |
 | `field-guide.html` | Styled viewer for the field guide markdown |
 | `pgvector-field-guide.md` | Decision-tree reference for sizing pgvector deployments |
 | `pgvector_benchmark.py` | Benchmark pipeline — ingests datasets, measures recall/latency |

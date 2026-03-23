@@ -12,7 +12,7 @@
     "recall_target": 0.95,
     "top_k": 100,
     "index_type": "hnsw",
-    "platform": "RDS"
+    "platform": "Supabase"
   },
   {
     "dataset_name": "gist-960 (CV features)",
@@ -27,6 +27,6 @@
     "recall_target": 0.99,
     "top_k": 10,
     "index_type": "hnsw",
-    "platform": "RDS"
+    "platform": "Supabase"
   }
 ]
