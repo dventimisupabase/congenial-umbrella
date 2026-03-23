@@ -8,10 +8,11 @@ pgvector is an open-source PostgreSQL extension that adds vector similarity sear
 
 ### Key Properties
 
-- **Max dimensions**: 16,000 for `vector`, 16,000 for `halfvec`, 64,000 for `bit`, unlimited non-zero elements for `sparsevec`
+- **Max dimensions**: 16,000 for `vector` and `halfvec`, 64,000 for `bit`, unlimited non-zero elements for `sparsevec`
+- **Storage per element**: `vector` takes `4 * dimensions + 8` bytes, `halfvec` takes `2 * dimensions + 8` bytes
 - **Index types**: HNSW (graph-based, better recall) and IVFFlat (partition-based, faster builds)
 - **Distance metrics**: L2 (`<->`), cosine (`<=>`), inner product (`<#>`), L1/Manhattan (`<+>`), Hamming (`<~>`), Jaccard (`<%>`)
-- **Vector types**: `vector` (float32, 4 bytes/dim), `halfvec` (float16, 2 bytes/dim), `bit` (1 bit/dim), `sparsevec`
+- **Vector types**: `vector` (float32, 4 bytes/dim), `halfvec` (float16, 2 bytes/dim), `bit` (1 bit/dim), `sparsevec` (sparse, variable)
 
 ---
 
@@ -132,7 +133,7 @@ Speed up HNSW builds with parallel workers:
 
 ```sql
 SET maintenance_work_mem = '8GB';
-SET max_parallel_maintenance_workers = 7;
+SET max_parallel_maintenance_workers = 7;  -- plus leader = 8 total
 CREATE INDEX CONCURRENTLY ON items USING hnsw (embedding vector_cosine_ops)
     WITH (m = 16, ef_construction = 128);
 ```
@@ -193,6 +194,16 @@ When using `halfvec`, use the corresponding ops class:
 | L2 | `halfvec_l2_ops` |
 | Cosine | `halfvec_cosine_ops` |
 | Inner Product | `halfvec_ip_ops` |
+
+### sparsevec Operators
+
+When using `sparsevec`, use the corresponding ops class:
+
+| Metric | Ops Class |
+|---|---|
+| L2 | `sparsevec_l2_ops` |
+| Cosine | `sparsevec_cosine_ops` |
+| Inner Product | `sparsevec_ip_ops` |
 
 ### Expression Indexing for halfvec
 
@@ -434,10 +445,19 @@ WHERE schemaname = 'public';
 
 ### Iterative Scan for Filtered Queries
 
-When combining vector search with WHERE clauses, pgvector supports iterative scanning:
+When combining vector search with WHERE clauses, pgvector supports iterative scanning. Both HNSW and IVFFlat indexes support this feature.
+
+**HNSW iterative scan:**
 
 ```sql
+-- strict_order: exact distance ordering (safer, may be slower)
+SET hnsw.iterative_scan = strict_order;
+
+-- relaxed_order: allows minor reordering (faster, still high recall)
 SET hnsw.iterative_scan = relaxed_order;
+
+-- Limit how many tuples the scan examines (safety valve)
+SET hnsw.max_scan_tuples = 50000;
 
 SELECT * FROM items
 WHERE category = 'electronics'
@@ -445,7 +465,21 @@ ORDER BY embedding <=> $1
 LIMIT 10;
 ```
 
-This re-scans the index with increasing `ef_search` until enough matching rows are found.
+**IVFFlat iterative scan:**
+
+```sql
+SET ivfflat.iterative_scan = relaxed_order;
+
+-- Limit how many lists the scan probes
+SET ivfflat.max_probes = 100;
+
+SELECT * FROM items
+WHERE category = 'electronics'
+ORDER BY embedding <=> $1
+LIMIT 10;
+```
+
+Iterative scan re-scans the index with increasing search scope until enough matching rows are found.
 
 ---
 
