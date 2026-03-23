@@ -65,25 +65,18 @@ export const CPU_BASE_MS = {
   '2048-4096-halfvec': 1.5,'2048-4096-vector': 3.5,
 };
 
-// RDS and EC2 instance catalog
+// Supabase compute tier catalog
 export const INSTANCES = [
-  // General purpose (db.m6i / m6i)
-  { name: 'db.m6i.large',    vcpus: 2,   ram: 8,   family: 'M', hourly: 0.171, platform: 'RDS' },
-  { name: 'db.m6i.xlarge',   vcpus: 4,   ram: 16,  family: 'M', hourly: 0.342, platform: 'RDS' },
-  { name: 'db.m6i.2xlarge',  vcpus: 8,   ram: 32,  family: 'M', hourly: 0.684, platform: 'RDS' },
-  { name: 'db.m6i.4xlarge',  vcpus: 16,  ram: 64,  family: 'M', hourly: 1.368, platform: 'RDS' },
-  { name: 'db.m6i.8xlarge',  vcpus: 32,  ram: 128, family: 'M', hourly: 2.736, platform: 'RDS' },
-  // Memory optimized (db.r6i / r6i)
-  { name: 'db.r6i.large',    vcpus: 2,   ram: 16,  family: 'R', hourly: 0.252, platform: 'RDS' },
-  { name: 'db.r6i.xlarge',   vcpus: 4,   ram: 32,  family: 'R', hourly: 0.504, platform: 'RDS' },
-  { name: 'db.r6i.2xlarge',  vcpus: 8,   ram: 64,  family: 'R', hourly: 1.008, platform: 'RDS' },
-  { name: 'db.r6i.4xlarge',  vcpus: 16,  ram: 128, family: 'R', hourly: 2.016, platform: 'RDS' },
-  { name: 'db.r6i.8xlarge',  vcpus: 32,  ram: 256, family: 'R', hourly: 4.032, platform: 'RDS' },
-  // Compute optimized — self-managed EC2 only
-  { name: 'c6i.xlarge',      vcpus: 4,   ram: 8,   family: 'C', hourly: 0.170, platform: 'EC2' },
-  { name: 'c6i.2xlarge',     vcpus: 8,   ram: 16,  family: 'C', hourly: 0.340, platform: 'EC2' },
-  { name: 'c6i.4xlarge',     vcpus: 16,  ram: 32,  family: 'C', hourly: 0.680, platform: 'EC2' },
-  { name: 'c6i.8xlarge',     vcpus: 32,  ram: 64,  family: 'C', hourly: 1.360, platform: 'EC2' },
+  { name: 'Micro',  vcpus: 2,  ram: 1,   hourly: 0.01370, platform: 'Supabase', dedicated: false },
+  { name: 'Small',  vcpus: 2,  ram: 2,   hourly: 0.02055, platform: 'Supabase', dedicated: false },
+  { name: 'Medium', vcpus: 2,  ram: 4,   hourly: 0.08220, platform: 'Supabase', dedicated: false },
+  { name: 'Large',  vcpus: 2,  ram: 8,   hourly: 0.15070, platform: 'Supabase', dedicated: true },
+  { name: 'XL',     vcpus: 4,  ram: 16,  hourly: 0.28770, platform: 'Supabase', dedicated: true },
+  { name: '2XL',    vcpus: 8,  ram: 32,  hourly: 0.56165, platform: 'Supabase', dedicated: true },
+  { name: '4XL',    vcpus: 16, ram: 64,  hourly: 1.09590, platform: 'Supabase', dedicated: true },
+  { name: '8XL',    vcpus: 32, ram: 128, hourly: 2.19180, platform: 'Supabase', dedicated: true },
+  { name: '12XL',   vcpus: 48, ram: 192, hourly: 3.28770, platform: 'Supabase', dedicated: true },
+  { name: '16XL',   vcpus: 64, ram: 256, hourly: 4.38360, platform: 'Supabase', dedicated: true },
 ];
 
 export const RAM_TIERS = [8, 16, 32, 64, 128, 256, 512];
@@ -244,7 +237,7 @@ export function sizeDisk(numVectors, dimensions, recall, memory, index) {
 
   // Disk type recommendation
   const needsHighIOPS = memory.totalRequiredMB > memory.roundedGB * 1024 * 0.8; // tight on RAM = more disk reads
-  const diskType = needsHighIOPS ? 'gp3 with provisioned IOPS' : 'gp3 (baseline 3,000 IOPS)';
+  const diskType = needsHighIOPS ? 'High-performance SSD (provisioned IOPS recommended)' : 'SSD (standard Supabase disk)';
 
   return {
     tableGB: +tableGB.toFixed(1),
@@ -316,57 +309,30 @@ export function sizeCompute(dimensions, recall, index, peakQPS, writePattern, pe
 // Stage 7: Instance Selection
 // ---------------------------------------------------------------------------
 
-export function selectInstance(compute, memory, disk, platform) {
+export function selectInstance(compute, memory, disk) {
   const vcpus = compute.totalVcpus;
   const ramGB = memory.roundedGB;
-  const preferredPlatform = platform || 'RDS';
 
-  // Determine family based on RAM:vCPU ratio
-  let family, constraint, familyLabel;
-  if (ramGB > vcpus * 8) {
-    family = 'R'; constraint = 'memory'; familyLabel = 'R-series (memory-optimized)';
-  } else if (ramGB <= vcpus * 2) {
-    family = 'C'; constraint = 'compute'; familyLabel = 'C-series (compute-optimized, EC2 only)';
-  } else {
-    family = 'M'; constraint = 'balanced'; familyLabel = 'M-series (general-purpose)';
-  }
-
-  // Filter by platform preference (C-series only on EC2)
-  let candidates = INSTANCES
-    .filter(i => i.family === family)
-    .filter(i => preferredPlatform === 'EC2' || i.platform === preferredPlatform)
-    .sort((a, b) => a.vcpus - b.vcpus);
-
-  // Fallback to M-series if no candidates
-  if (candidates.length === 0) {
-    family = 'M'; constraint = 'balanced'; familyLabel = 'M-series (general-purpose)';
-    candidates = INSTANCES
-      .filter(i => i.family === 'M')
-      .filter(i => preferredPlatform === 'EC2' || i.platform === preferredPlatform)
-      .sort((a, b) => a.vcpus - b.vcpus);
-  }
+  // Find the smallest Supabase tier that meets both vCPU and RAM requirements
+  const candidates = INSTANCES.sort((a, b) => a.vcpus - b.vcpus || a.ram - b.ram);
 
   let selected = candidates.find(i => i.vcpus >= vcpus && i.ram >= ramGB);
   let overprovisionNote = '';
 
   if (!selected) {
-    selected = candidates[candidates.length - 1] || INSTANCES[INSTANCES.length - 1];
-    overprovisionNote = 'Workload exceeds largest available instance; consider read replicas or partitioning.';
+    selected = candidates[candidates.length - 1];
+    overprovisionNote = 'Workload exceeds largest available Supabase tier; consider read replicas or partitioning.';
   }
 
   const monthly = selected.hourly * 730;
-  const reserved = monthly * 0.65;
   const diskCost = disk.totalGB * 0.08;
 
   return {
-    instanceFamily: familyLabel,
-    dominantConstraint: constraint,
-    instanceType: selected.name,
-    instanceVcpus: selected.vcpus,
-    instanceRamGB: selected.ram,
-    platform: selected.platform,
-    costOnDemandMo: Math.round(monthly + diskCost),
-    costReservedMo: Math.round(reserved + diskCost),
+    tierName: selected.name,
+    tierVcpus: selected.vcpus,
+    tierRamGB: selected.ram,
+    dedicated: selected.dedicated,
+    monthlyCost: Math.round(monthly + diskCost),
     overprovisionNote,
   };
 }
@@ -410,7 +376,7 @@ export function postgresConfig(memory, index, compute, writePattern) {
 export function suggestOptimizations(classification, recall, index, dimensions, topK, numVectors) {
   const opts = [];
 
-  opts.push('Read replicas: add 1-2 read replicas for HA and load distribution. Doubles/triples read throughput.');
+  opts.push('Read replicas: Supabase supports read replicas on paid plans for HA and load distribution.');
 
   if (recall.storageType === 'vector' && classification.cls === 'neural_text') {
     opts.push('halfvec indexing: cast to halfvec for 2x index compression. Test recall impact: CREATE INDEX ON tbl USING hnsw ((embedding::halfvec(N)) halfvec_cosine_ops)');
@@ -505,7 +471,6 @@ export function sizeCluster(config) {
     recallTarget,
     topK,
     indexType = 'hnsw',
-    platform = 'RDS',
   } = config;
 
   const classification = classifyEmbeddings(embeddingType, dimensions);
@@ -514,7 +479,7 @@ export function sizeCluster(config) {
   const memory = sizeMemory(numVectors, dimensions, recall, index);
   const disk = sizeDisk(numVectors, dimensions, recall, memory, index);
   const compute = sizeCompute(dimensions, recall, index, peakQPS, writePattern, peakWriteRate);
-  const instance = selectInstance(compute, memory, disk, platform);
+  const instance = selectInstance(compute, memory, disk);
   const pgConfig = postgresConfig(memory, index, compute, writePattern);
   const optimizations = suggestOptimizations(classification, recall, index, dimensions, topK, numVectors);
   const sql = generateSQL(datasetName, dimensions, classification, recall, index);
@@ -601,14 +566,12 @@ export function formatSummary(r) {
   a(`  BG processes:    ${r.compute.bgCores}`);
   a(`  Total vCPUs:     ${r.compute.totalVcpus}`);
   a('');
-  a('  Instance & Cost');
+  a('  Compute Tier & Cost');
   a('  ' + '-'.repeat(30));
-  a(`  Instance:        ${r.instance.instanceType} (${r.instance.instanceVcpus} vCPU, ${r.instance.instanceRamGB} GB)`);
-  a(`  Platform:        ${r.instance.platform}`);
-  a(`  Constraint:      ${r.instance.dominantConstraint} → ${r.instance.instanceFamily}`);
+  a(`  Compute Tier:    ${r.instance.tierName} (${r.instance.tierVcpus} vCPU, ${r.instance.tierRamGB} GB)`);
+  a(`  CPU:             ${r.instance.dedicated ? 'Dedicated' : 'Shared'}`);
   if (r.instance.overprovisionNote) a(`  Note:            ${r.instance.overprovisionNote}`);
-  a(`  Cost (on-demand): $${r.instance.costOnDemandMo.toLocaleString()}/mo`);
-  a(`  Cost (reserved):  $${r.instance.costReservedMo.toLocaleString()}/mo`);
+  a(`  Monthly Cost:    $${r.instance.monthlyCost.toLocaleString()}/mo`);
   a('');
   a('  Optimizations');
   a('  ' + '-'.repeat(30));

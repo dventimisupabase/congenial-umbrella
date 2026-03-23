@@ -555,25 +555,7 @@
         </div>
       </label>
     </div>
-    <label>Platform</label>
-    <div class="radio-group" id="rg-platform">
-      <label class="radio-option selected" data-value="RDS">
-        <input type="radio" name="platform" value="RDS" checked>
-        <span class="radio-dot"></span>
-        <div>
-          <div class="radio-label">RDS for PostgreSQL</div>
-          <div class="radio-sublabel">Managed, M-series and R-series instances</div>
-        </div>
-      </label>
-      <label class="radio-option" data-value="EC2">
-        <input type="radio" name="platform" value="EC2">
-        <span class="radio-dot"></span>
-        <div>
-          <div class="radio-label">Self-managed (EC2)</div>
-          <div class="radio-sublabel">Full control, C-series available for compute-heavy workloads</div>
-        </div>
-      </label>
-    </div>
+    <!-- Platform is always Supabase -->
     <div class="btn-row">
       <button onclick="prev()">Back</button>
       <button class="primary" onclick="calculate()">Calculate Architecture</button>
@@ -735,7 +717,6 @@ function calculate() {
     recallTarget: recallPct > 1 ? recallPct / 100 : recallPct,
     topK: getInt('top_k'),
     indexType: getRadio('index_type') || 'hnsw',
-    platform: getRadio('platform') || 'RDS',
   });
 
   lastResult = r;
@@ -770,10 +751,10 @@ function renderResults(r) {
 
   $.innerHTML = `
     <div class="hero-cost">
-      <div class="amount">$${r.instance.costOnDemandMo.toLocaleString()}/mo</div>
-      <div class="sublabel">on-demand ($${r.instance.costReservedMo.toLocaleString()}/mo reserved)</div>
-      <div class="instance">${r.instance.instanceType} (${r.instance.instanceVcpus} vCPU, ${r.instance.instanceRamGB} GB RAM)</div>
-      <div class="sublabel">${r.instance.platform}</div>
+      <div class="amount">$${r.instance.monthlyCost.toLocaleString()}/mo</div>
+      <div class="sublabel">Supabase monthly</div>
+      <div class="instance">${r.instance.tierName} (${r.instance.tierVcpus} vCPU, ${r.instance.tierRamGB} GB RAM)</div>
+      <div class="sublabel">${r.instance.dedicated ? 'Dedicated CPU' : 'Shared CPU'}</div>
       ${r.instance.overprovisionNote ? `<div class="result-note">${r.instance.overprovisionNote}</div>` : ''}
     </div>
 
@@ -874,9 +855,9 @@ function copyResults() {
     `PostgreSQL Config:`,
     ...Object.entries(r.pgConfig).map(([k, v]) => `  ${k} = ${v}`),
     ``,
-    `Instance: ${r.instance.instanceType} (${r.instance.instanceVcpus} vCPU, ${r.instance.instanceRamGB} GB) [${r.instance.platform}]`,
+    `Compute Tier: ${r.instance.tierName} (${r.instance.tierVcpus} vCPU, ${r.instance.tierRamGB} GB) [${r.instance.dedicated ? 'Dedicated' : 'Shared'} CPU]`,
     r.instance.overprovisionNote ? `Note: ${r.instance.overprovisionNote}` : null,
-    `Cost: $${r.instance.costOnDemandMo}/mo on-demand, $${r.instance.costReservedMo}/mo reserved`,
+    `Monthly Cost: $${r.instance.monthlyCost}/mo`,
     ``,
     `SQL:`,
     r.sql,
