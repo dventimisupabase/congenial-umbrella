@@ -281,6 +281,7 @@ def compute_ground_truth(conn, cfg, query_vecs, top_k):
 
     with conn.cursor() as cur:
         # Disable index for brute-force
+        cur.execute("SET statement_timeout = 0;")
         cur.execute("SET enable_indexscan = off;")
         cur.execute("SET enable_bitmapscan = off;")
 
@@ -339,12 +340,47 @@ def benchmark_queries(conn, cfg, query_vecs, ground_truth, top_k):
     return latencies, recalls
 
 
+def _count_rows(conn, table):
+    with conn.cursor() as cur:
+        cur.execute(f"SELECT count(*) FROM {table}")
+        return cur.fetchone()[0]
+
+
+def sample_query_vectors_from_db(conn, cfg, n_queries):
+    """Sample query vectors directly from the database — no HuggingFace needed."""
+    table = cfg["table"]
+    dims = cfg["dimensions"]
+    print(f"  Sampling {n_queries} query vectors from {table}...", flush=True)
+
+    with conn.cursor() as cur:
+        cur.execute("SET statement_timeout = 0")
+        # Use TABLESAMPLE for fast random sampling instead of ORDER BY random()
+        cur.execute(
+            f"SELECT embedding::text FROM {table} TABLESAMPLE BERNOULLI (1) LIMIT %s",
+            (n_queries,),
+        )
+        rows = cur.fetchall()
+
+    vecs = []
+    for (vec_str,) in rows:
+        # Parse "[1.0,2.0,...]" text format
+        vals = [float(x) for x in vec_str.strip("[]").split(",")]
+        vecs.append(vals)
+
+    return np.array(vecs, dtype=np.float32)
+
+
 def run_benchmark(conn, cfg, vectors, n_queries=200):
     top_k = cfg["top_k"]
 
-    # Use last n_queries vectors as query set
-    n_queries = min(n_queries, len(vectors) // 10, 500)
-    query_vecs = vectors[-n_queries:]
+    if vectors is not None:
+        # Use last n_queries vectors from the loaded dataset
+        n_queries = min(n_queries, len(vectors) // 10, 500)
+        query_vecs = vectors[-n_queries:]
+    else:
+        # Sample from the DB (no dataset loaded — resume mode)
+        n_queries = min(n_queries, 500)
+        query_vecs = sample_query_vectors_from_db(conn, cfg, n_queries)
 
     # Ground truth
     ground_truth = compute_ground_truth(conn, cfg, query_vecs, top_k)
@@ -358,7 +394,7 @@ def run_benchmark(conn, cfg, vectors, n_queries=200):
 
     results = {
         "dataset": cfg["table"],
-        "n_vectors": len(vectors),
+        "n_vectors": len(vectors) if vectors is not None else _count_rows(conn, cfg["table"]),
         "n_queries": n_queries,
         "top_k": top_k,
         "target_recall": cfg["target_recall"],
@@ -418,6 +454,7 @@ def main():
     parser.add_argument("--sample", type=float, default=0.01, help="Fraction of dataset to use (0.01 = 1%%)")
     parser.add_argument("--queries", type=int, default=200, help="Number of queries for benchmark")
     parser.add_argument("--resume", action="store_true", help="Resume ingest without dropping tables")
+    parser.add_argument("--benchmark-only", action="store_true", help="Skip load/ingest/index, just run recall benchmark (samples queries from DB)")
     args = parser.parse_args()
 
     datasets_to_run = (
@@ -436,11 +473,14 @@ def main():
         print(f"  Dataset: {ds_name} ({cfg['dimensions']}d, {cfg['distance']})")
         print(f"{'='*60}")
 
-        vectors = load_vectors(cfg, args.sample)
-        if not args.resume:
-            create_table(conn, cfg)
-        conn = ingest(conn, cfg, vectors, target=args.target)
-        create_index(conn, cfg)
+        if args.benchmark_only:
+            vectors = None
+        else:
+            vectors = load_vectors(cfg, args.sample)
+            if not args.resume:
+                create_table(conn, cfg)
+            conn = ingest(conn, cfg, vectors, target=args.target)
+            create_index(conn, cfg)
         results = run_benchmark(conn, cfg, vectors, n_queries=args.queries)
         print_results(results)
         all_results.append(results)
