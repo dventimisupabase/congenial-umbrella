@@ -128,6 +128,7 @@
 
   @media (max-width: 600px) {
     .tools { grid-template-columns: 1fr; }
+    .features-grid { grid-template-columns: 1fr; }
   }
 
   .tool-card {
@@ -216,7 +217,7 @@
 
   .features-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    grid-template-columns: repeat(3, 1fr);
     gap: 1px;
     background: var(--border);
     border: 1px solid var(--border);
