@@ -50,7 +50,7 @@ DATASETS = {
     "dbpedia": {
         "hf_name": "Supabase/dbpedia-openai-3-large-1M",
         "split": "train",
-        "vec_col": "openai",
+        "vec_col": "embedding",
         "dimensions": 3072,
         "distance": "cosine",
         "table": "bench_dbpedia",
@@ -64,8 +64,9 @@ DATASETS = {
     },
     "gist960": {
         "hf_name": "open-vdb/gist-960-euclidean",
+        "hf_config": "train",
         "split": "train",
-        "vec_col": "vector",
+        "vec_col": "emb",
         "dimensions": 960,
         "distance": "l2",
         "table": "bench_gist960",
@@ -88,7 +89,7 @@ def get_connection(target):
     if target == "local":
         dsn = os.environ.get(
             "DATABASE_URL",
-            "postgresql://postgres:postgres@localhost:54322/postgres",
+            "postgresql://postgres:postgres@localhost:54422/postgres",
         )
     else:
         dsn = os.environ.get("DATABASE_URL")
@@ -121,8 +122,15 @@ def create_table(conn, cfg):
                 embedding vector({dims})
             );
         """)
-        cur.execute(f"ALTER TABLE {table} ALTER COLUMN embedding SET STORAGE PLAIN;")
-    print(f"  Created table {table} (vector({dims}))")
+        # STORAGE PLAIN avoids TOAST overhead but only works when row fits in 8KB page
+        # vector overhead: 4 * dims + 8 bytes, plus ~36 bytes tuple overhead
+        row_bytes = 4 * dims + 8 + 36
+        if row_bytes <= 8160:
+            cur.execute(f"ALTER TABLE {table} ALTER COLUMN embedding SET STORAGE PLAIN;")
+            print(f"  Created table {table} (vector({dims}), STORAGE PLAIN)")
+        else:
+            print(f"  Created table {table} (vector({dims}), STORAGE EXTERNAL — row too large for PLAIN)")
+            cur.execute(f"ALTER TABLE {table} ALTER COLUMN embedding SET STORAGE EXTERNAL;")
 
 
 def create_index(conn, cfg):
@@ -130,23 +138,39 @@ def create_index(conn, cfg):
     ops = cfg["ops_class"]
     m = cfg["hnsw_m"]
     efc = cfg["hnsw_ef_construction"]
+    dims = cfg["dimensions"]
     idx_name = f"{table}_embedding_idx"
 
-    with conn.cursor() as cur:
-        cur.execute(f"SET maintenance_work_mem = '2GB';")
-        cur.execute(f"SET max_parallel_maintenance_workers = 4;")
+    # HNSW has a 2000 dimension limit for vector type.
+    # For higher dimensions, use expression index with halfvec.
+    use_halfvec_index = dims > 2000
+    if use_halfvec_index:
+        halfvec_ops = cfg.get("halfvec_ops_class", ops.replace("vector_", "halfvec_"))
+        col_expr = f"(embedding::halfvec({dims}))"
+        index_ops = halfvec_ops
+    else:
+        col_expr = "embedding"
+        index_ops = ops
 
-        print(f"  Building HNSW index (m={m}, ef_construction={efc})...")
+    with conn.cursor() as cur:
+        cur.execute("SET maintenance_work_mem = '128MB';")
+        cur.execute("SET max_parallel_maintenance_workers = 0;")
+
+        suffix = " (halfvec expression index)" if use_halfvec_index else ""
+        print(f"  Building HNSW index (m={m}, ef_construction={efc}){suffix}...")
         t0 = time.time()
         cur.execute(f"""
             CREATE INDEX {idx_name} ON {table}
-            USING hnsw (embedding {ops})
+            USING hnsw ({col_expr} {index_ops})
             WITH (m = {m}, ef_construction = {efc});
         """)
         elapsed = time.time() - t0
         print(f"  Index built in {elapsed:.1f}s")
 
         cur.execute("ANALYZE {};".format(table))
+
+    # Store whether we used halfvec index so queries can cast appropriately
+    cfg["_use_halfvec_index"] = use_halfvec_index
 
 
 # ---------------------------------------------------------------------------
@@ -155,7 +179,11 @@ def create_index(conn, cfg):
 
 def load_vectors(cfg, sample_frac):
     print(f"  Loading {cfg['hf_name']} (sample={sample_frac})...")
-    ds = load_dataset(cfg["hf_name"], split=cfg["split"])
+    hf_config = cfg.get("hf_config")
+    if hf_config:
+        ds = load_dataset(cfg["hf_name"], hf_config, split=cfg["split"])
+    else:
+        ds = load_dataset(cfg["hf_name"], split=cfg["split"])
 
     n_total = len(ds)
     n_sample = max(int(n_total * sample_frac), 100)
@@ -229,6 +257,16 @@ def benchmark_queries(conn, cfg, query_vecs, ground_truth, top_k):
     table = cfg["table"]
     dist_op = cfg["dist_op"]
     ef_search = cfg["hnsw_ef_search"]
+    use_halfvec = cfg.get("_use_halfvec_index", False)
+    dims = cfg["dimensions"]
+
+    # When using halfvec expression index, queries must cast to match
+    if use_halfvec:
+        cast_type = f"halfvec({dims})"
+        order_expr = f"embedding::halfvec({dims})"
+    else:
+        cast_type = "vector"
+        order_expr = "embedding"
 
     latencies = []
     recalls = []
@@ -241,7 +279,7 @@ def benchmark_queries(conn, cfg, query_vecs, ground_truth, top_k):
 
             t0 = time.perf_counter()
             cur.execute(
-                f"SELECT id FROM {table} ORDER BY embedding {dist_op} %s::vector LIMIT %s",
+                f"SELECT id FROM {table} ORDER BY {order_expr} {dist_op} %s::{cast_type} LIMIT %s",
                 (vec_str, top_k),
             )
             ids = set(row[0] for row in cur.fetchall())
