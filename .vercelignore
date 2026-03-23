@@ -1,9 +1,8 @@
 *.py
-*.md
 *.txt
 .git
 .vercel
 .gitignore
 __pycache__
-qdrant_email.txt
 scenarios.json
+README.md

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Qdrant Field Guide</title>
+<title>pgvector Field Guide</title>
 <style>
   :root {
     --bg: #09090b;
@@ -372,7 +372,7 @@
   <nav class="sidebar" id="sidebar">
     <div class="sidebar-header">
       <h2>Field Guide</h2>
-      <p>Qdrant Vector Database Architecture</p>
+      <p>pgvector for PostgreSQL</p>
     </div>
     <ul class="toc" id="toc"></ul>
   </nav>
@@ -395,14 +395,16 @@
 <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/languages/json.min.js"></script>
 <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/languages/python.min.js"></script>
 <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/languages/javascript.min.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/languages/sql.min.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/languages/bash.min.js"></script>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/styles/github-dark.min.css">
 <script>
 (async function() {
   // Fetch the markdown source of truth
-  const res = await fetch('./qdrant-field-guide.md');
+  const res = await fetch('./pgvector-field-guide.md');
   if (!res.ok) {
     document.getElementById('content').innerHTML =
-      '<div class="loading">Failed to load field guide. Make sure qdrant-field-guide.md is in the same directory.</div>';
+      '<div class="loading">Failed to load field guide. Make sure pgvector-field-guide.md is in the same directory.</div>';
     return;
   }
   const md = await res.text();

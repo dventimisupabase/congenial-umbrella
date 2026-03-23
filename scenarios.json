@@ -1,6 +1,6 @@
 [
   {
-    "dataset_name": "OpenAI dbpedia (Search Team)",
+    "dataset_name": "OpenAI dbpedia (text search)",
     "embedding_type": "neural_text",
     "dimensions": 3072,
     "num_vectors": 1000000,
@@ -10,10 +10,12 @@
     "batch_size": 0,
     "p99_latency_ms": 50,
     "recall_target": 0.95,
-    "top_k": 100
+    "top_k": 100,
+    "index_type": "hnsw",
+    "platform": "RDS"
   },
   {
-    "dataset_name": "gist-960 (Data Science Team)",
+    "dataset_name": "gist-960 (CV features)",
     "embedding_type": "classical_cv",
     "dimensions": 960,
     "num_vectors": 1000000,
@@ -23,6 +25,8 @@
     "batch_size": 100000,
     "p99_latency_ms": 500,
     "recall_target": 0.99,
-    "top_k": 10
+    "top_k": 10,
+    "index_type": "hnsw",
+    "platform": "RDS"
   }
 ]

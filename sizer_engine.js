@@ -1,9 +1,9 @@
 /**
- * Qdrant Cluster Sizer Engine — Single source of truth.
+ * pgvector Cluster Sizer Engine — Single source of truth.
  *
- * This module contains ALL sizing logic and constants. It is consumed by:
+ * This module contains ALL sizing logic and constants for PostgreSQL + pgvector
+ * deployments. It is consumed by:
  *   - index.html (browser wizard)
- *   - qdrant_sizer_cli.js (Node CLI)
  *
  * No logic should be duplicated outside this file.
  */
@@ -12,50 +12,81 @@
 // Constants — All decision tables live here
 // ---------------------------------------------------------------------------
 
-export const QUANT_MATRIX = {
-  'A-RELAXED': 'scalar', 'A-MODERATE': 'scalar', 'A-STRICT': 'scalar',
-  'B-RELAXED': 'scalar', 'B-MODERATE': 'scalar', 'B-STRICT': 'none',
-  'C-RELAXED': 'scalar', 'C-MODERATE': 'none',   'C-STRICT': 'none',
+// Storage bytes per dimension by vector type
+export const BYTES_PER_DIM = {
+  vector: 4,     // float32
+  halfvec: 2,    // float16
+  bit: 1 / 8,    // 1 bit per dimension
 };
 
-export const M_BASE = { RELAXED: 16, MODERATE: 20, STRICT: 32 };
-export const M_UP   = { RELAXED: 20, MODERATE: 28, STRICT: 32 };
-export const M_DOWN = { RELAXED: 16, MODERATE: 16, STRICT: 24 };
+// Per-vector fixed overhead in Postgres (tuple header + alignment + ItemPointer)
+export const TUPLE_OVERHEAD_BYTES = 36;
 
-export const EF_CONSTRUCT_BASE = { RELAXED: 200, MODERATE: 256, STRICT: 400 };
-export const EF_CONSTRUCT_BATCH_STRICT = 400;
+// pgvector index types
+export const INDEX_TYPES = ['hnsw', 'ivfflat'];
 
-export const EF_MULTIPLIER = { RELAXED: 2, MODERATE: 3, STRICT: 6 };
-export const EF_FLOOR      = { RELAXED: 64, MODERATE: 64, STRICT: 128 };
-
-export const OVERSAMPLING = {
-  'scalar-RELAXED': 2.0, 'scalar-MODERATE': 2.5, 'scalar-STRICT': 4.0,
-  'binary-RELAXED': 3.0, 'binary-MODERATE': 4.0,
+// Distance operators
+export const DISTANCE_OPS = {
+  l2:      { operator: '<->', opsClass: 'vector_l2_ops',     halfvecOps: 'halfvec_l2_ops',     label: 'L2 (Euclidean)' },
+  cosine:  { operator: '<=>', opsClass: 'vector_cosine_ops', halfvecOps: 'halfvec_cosine_ops', label: 'Cosine' },
+  ip:      { operator: '<#>', opsClass: 'vector_ip_ops',     halfvecOps: 'halfvec_ip_ops',     label: 'Inner Product' },
 };
 
-export const INDEXING_TIME_MS = { 12: 1.0, 16: 1.5, 20: 2.5, 24: 3.0, 28: 3.5, 32: 4.0 };
+// HNSW default parameters from pgvector source
+export const HNSW_DEFAULTS = { m: 16, ef_construction: 64 };
 
+// HNSW m recommendations by recall regime
+export const HNSW_M = { RELAXED: 16, MODERATE: 24, STRICT: 32 };
+
+// HNSW ef_construction recommendations
+export const HNSW_EF_CONSTRUCTION = { RELAXED: 64, MODERATE: 128, STRICT: 256 };
+
+// hnsw.ef_search recommendations (query-time parameter)
+export const HNSW_EF_SEARCH_MULTIPLIER = { RELAXED: 2, MODERATE: 4, STRICT: 8 };
+export const HNSW_EF_SEARCH_FLOOR = { RELAXED: 40, MODERATE: 100, STRICT: 200 };
+
+// IVFFlat: lists rule of thumb
+// <= 1M rows: rows/1000; > 1M rows: sqrt(rows)
+export const IVFFLAT_PROBES_MULTIPLIER = { RELAXED: 1, MODERATE: 2, STRICT: 4 };
+
+// Whether halfvec indexing is viable given embedding type and recall
+export const HALFVEC_MATRIX = {
+  'neural_text-RELAXED': true,  'neural_text-MODERATE': true,  'neural_text-STRICT': true,
+  'neural_vision-RELAXED': true,'neural_vision-MODERATE': true, 'neural_vision-STRICT': false,
+  'classical_cv-RELAXED': true, 'classical_cv-MODERATE': false, 'classical_cv-STRICT': false,
+  'other-RELAXED': true,        'other-MODERATE': false,        'other-STRICT': false,
+};
+
+// CPU base ms per query estimate by dimension bucket and storage type
 export const CPU_BASE_MS = {
-  '<512-binary': 0.3,    '<512-scalar': 0.5,    '<512-none': 1.0,
-  '512-1024-binary': 0.5, '512-1024-scalar': 1.0, '512-1024-none': 2.0,
-  '1024-2048-binary': 0.8,'1024-2048-scalar': 1.5,'1024-2048-none': 3.0,
-  '2048-4096-binary': 1.0,'2048-4096-scalar': 2.0,'2048-4096-none': 5.0,
+  '<512-halfvec': 0.3,     '<512-vector': 0.5,
+  '512-1024-halfvec': 0.6, '512-1024-vector': 1.2,
+  '1024-2048-halfvec': 1.0,'1024-2048-vector': 2.0,
+  '2048-4096-halfvec': 1.5,'2048-4096-vector': 3.5,
 };
 
+// RDS and EC2 instance catalog
 export const INSTANCES = [
-  { name: 'c6i.xlarge',    vcpus: 4,  ram: 8,  family: 'C', hourly: 0.170 },
-  { name: 'c6i.2xlarge',   vcpus: 8,  ram: 16, family: 'C', hourly: 0.340 },
-  { name: 'c6i.4xlarge',   vcpus: 16, ram: 32, family: 'C', hourly: 0.680 },
-  { name: 'c6i.8xlarge',   vcpus: 32, ram: 64, family: 'C', hourly: 1.360 },
-  { name: 'c6i.12xlarge',  vcpus: 48, ram: 96, family: 'C', hourly: 2.040 },
-  { name: 'm6i.xlarge',    vcpus: 4,  ram: 16, family: 'M', hourly: 0.192 },
-  { name: 'm6i.2xlarge',   vcpus: 8,  ram: 32, family: 'M', hourly: 0.384 },
-  { name: 'm6i.4xlarge',   vcpus: 16, ram: 64, family: 'M', hourly: 0.768 },
-  { name: 'r6i.xlarge',    vcpus: 4,  ram: 32, family: 'R', hourly: 0.252 },
-  { name: 'r6i.2xlarge',   vcpus: 8,  ram: 64, family: 'R', hourly: 0.504 },
+  // General purpose (db.m6i / m6i)
+  { name: 'db.m6i.large',    vcpus: 2,   ram: 8,   family: 'M', hourly: 0.171, platform: 'RDS' },
+  { name: 'db.m6i.xlarge',   vcpus: 4,   ram: 16,  family: 'M', hourly: 0.342, platform: 'RDS' },
+  { name: 'db.m6i.2xlarge',  vcpus: 8,   ram: 32,  family: 'M', hourly: 0.684, platform: 'RDS' },
+  { name: 'db.m6i.4xlarge',  vcpus: 16,  ram: 64,  family: 'M', hourly: 1.368, platform: 'RDS' },
+  { name: 'db.m6i.8xlarge',  vcpus: 32,  ram: 128, family: 'M', hourly: 2.736, platform: 'RDS' },
+  // Memory optimized (db.r6i / r6i)
+  { name: 'db.r6i.large',    vcpus: 2,   ram: 16,  family: 'R', hourly: 0.252, platform: 'RDS' },
+  { name: 'db.r6i.xlarge',   vcpus: 4,   ram: 32,  family: 'R', hourly: 0.504, platform: 'RDS' },
+  { name: 'db.r6i.2xlarge',  vcpus: 8,   ram: 64,  family: 'R', hourly: 1.008, platform: 'RDS' },
+  { name: 'db.r6i.4xlarge',  vcpus: 16,  ram: 128, family: 'R', hourly: 2.016, platform: 'RDS' },
+  { name: 'db.r6i.8xlarge',  vcpus: 32,  ram: 256, family: 'R', hourly: 4.032, platform: 'RDS' },
+  // Compute optimized — self-managed EC2 only
+  { name: 'c6i.xlarge',      vcpus: 4,   ram: 8,   family: 'C', hourly: 0.170, platform: 'EC2' },
+  { name: 'c6i.2xlarge',     vcpus: 8,   ram: 16,  family: 'C', hourly: 0.340, platform: 'EC2' },
+  { name: 'c6i.4xlarge',     vcpus: 16,  ram: 32,  family: 'C', hourly: 0.680, platform: 'EC2' },
+  { name: 'c6i.8xlarge',     vcpus: 32,  ram: 64,  family: 'C', hourly: 1.360, platform: 'EC2' },
 ];
 
-export const RAM_TIERS = [4, 8, 16, 32, 64, 128, 256];
+export const RAM_TIERS = [8, 16, 32, 64, 128, 256, 512];
 
 // ---------------------------------------------------------------------------
 // Stage 1: Classify Embeddings
@@ -63,19 +94,19 @@ export const RAM_TIERS = [4, 8, 16, 32, 64, 128, 256];
 
 export function classifyEmbeddings(embeddingType, dimensions) {
   if (embeddingType === 'neural_text') {
-    const cls = dimensions >= 1024 ? 'A' : 'B';
-    const label = cls === 'A' ? 'Binary-friendly neural' : 'Scalar-friendly neural';
-    return { cls, label, metric: 'Cosine', qdrant: 'Cosine' };
+    return { cls: 'neural_text', label: 'Neural text embeddings', metric: 'Cosine', pgOps: 'vector_cosine_ops' };
   }
-  if (embeddingType === 'neural_vision')
-    return { cls: 'B', label: 'Scalar-friendly neural', metric: 'Cosine', qdrant: 'Cosine' };
-  if (embeddingType === 'classical_cv')
-    return { cls: 'C', label: 'Quantization-resistant', metric: 'Euclidean (L2)', qdrant: 'Euclid' };
-  return { cls: 'B', label: 'Scalar-friendly neural (default)', metric: 'Cosine', qdrant: 'Cosine' };
+  if (embeddingType === 'neural_vision') {
+    return { cls: 'neural_vision', label: 'Neural vision embeddings', metric: 'Cosine', pgOps: 'vector_cosine_ops' };
+  }
+  if (embeddingType === 'classical_cv') {
+    return { cls: 'classical_cv', label: 'Classical CV features', metric: 'L2 (Euclidean)', pgOps: 'vector_l2_ops' };
+  }
+  return { cls: 'other', label: 'General embeddings', metric: 'Cosine', pgOps: 'vector_cosine_ops' };
 }
 
 // ---------------------------------------------------------------------------
-// Stage 2: Recall Regime
+// Stage 2: Recall Regime & Storage Type
 // ---------------------------------------------------------------------------
 
 export function recallRegime(recallTarget, embeddingClass) {
@@ -84,159 +115,150 @@ export function recallRegime(recallTarget, embeddingClass) {
   else if (recallTarget <= 0.98) regime = 'MODERATE';
   else regime = 'STRICT';
 
-  const quant = QUANT_MATRIX[`${embeddingClass}-${regime}`];
-  return { regime, quant, rescore: quant !== 'none' };
+  const useHalfvec = HALFVEC_MATRIX[`${embeddingClass}-${regime}`] || false;
+  const storageType = useHalfvec ? 'halfvec' : 'vector';
+  const bytesPerDim = BYTES_PER_DIM[storageType];
+  const compression = useHalfvec ? '2x (float32 → float16)' : 'None (full float32)';
+
+  return { regime, storageType, bytesPerDim, compression, useHalfvec };
 }
 
 // ---------------------------------------------------------------------------
-// Stage 3: HNSW Parameters
+// Stage 3: Index Strategy
 // ---------------------------------------------------------------------------
 
-export function hnswParams(regime, topK, quantization, writePattern) {
-  // 3a: m with top-k adjustment
-  let m;
-  if (topK >= 50) m = M_UP[regime];
-  else if (topK <= 20) m = M_DOWN[regime];
-  else m = M_BASE[regime];
+export function indexStrategy(regime, topK, numVectors, indexType) {
+  if (indexType === 'hnsw') {
+    const m = HNSW_M[regime];
+    const efConstruction = HNSW_EF_CONSTRUCTION[regime];
+    const efSearchCalc = HNSW_EF_SEARCH_MULTIPLIER[regime] * topK;
+    const efSearchFloor = HNSW_EF_SEARCH_FLOOR[regime];
+    const efSearch = Math.max(efSearchCalc, efSearchFloor);
+    const efNote = efSearch > efSearchCalc
+      ? `floor-adjusted from ${efSearchCalc} to ${efSearch}`
+      : `${HNSW_EF_SEARCH_MULTIPLIER[regime]}x top_k`;
 
-  // 3b: ef_construct
-  let efConstruct;
-  if (writePattern === 'batch' && regime === 'STRICT') efConstruct = EF_CONSTRUCT_BATCH_STRICT;
-  else efConstruct = EF_CONSTRUCT_BASE[regime];
-
-  // 3c: hnsw_ef
-  const calculatedEf = EF_MULTIPLIER[regime] * topK;
-  const floor = EF_FLOOR[regime];
-  const hnswEf = Math.max(calculatedEf, floor);
-  const efNote = hnswEf > calculatedEf
-    ? `floor-adjusted from ${calculatedEf} to ${hnswEf}`
-    : `${EF_MULTIPLIER[regime]}x top_k`;
-
-  // 3d: oversampling
-  let oversampling = null;
-  let rescoreCandidates = null;
-  if (quantization !== 'none') {
-    oversampling = OVERSAMPLING[`${quantization}-${regime}`] || null;
-    rescoreCandidates = oversampling ? Math.round(oversampling * topK) : null;
+    return { indexType: 'hnsw', m, efConstruction, efSearch, efNote };
   }
 
-  return { m, efConstruct, hnswEf, efNote, oversampling, rescoreCandidates };
+  // IVFFlat
+  const lists = numVectors <= 1_000_000
+    ? Math.max(Math.round(numVectors / 1000), 10)
+    : Math.round(Math.sqrt(numVectors));
+  const probesBase = Math.max(Math.round(Math.sqrt(lists)), 1);
+  const probes = probesBase * IVFFLAT_PROBES_MULTIPLIER[regime];
+
+  return { indexType: 'ivfflat', lists, probes };
 }
 
 // ---------------------------------------------------------------------------
-// Stage 4: Latency Assessment
+// Stage 4: Memory Sizing (PostgreSQL-aware)
 // ---------------------------------------------------------------------------
 
-export function latencyAssess(p99Ms, quantization) {
-  let tier;
-  if (p99Ms < 20) tier = 'ULTRA-TIGHT';
-  else if (p99Ms <= 99) tier = 'TIGHT';
-  else if (p99Ms <= 500) tier = 'MODERATE';
-  else tier = 'RELAXED';
+export function sizeMemory(numVectors, dimensions, recall, index) {
+  const bytesPerDim = recall.bytesPerDim;
 
-  const noQuant = quantization === 'none';
-  const placements = {
-    'ULTRA-TIGHT': ['RAM', 'RAM', 'RAM'],
-    'TIGHT':       ['RAM', 'RAM', 'mmap (NVMe)'],
-    'MODERATE':    ['RAM', 'RAM or mmap', 'mmap (SSD)'],
-    'RELAXED':     ['RAM', 'mmap', 'mmap (SSD)'],
-  };
+  // Table size: vectors + tuple overhead
+  const vectorBytes = dimensions * bytesPerDim;
+  const rowBytes = vectorBytes + TUPLE_OVERHEAD_BYTES;
+  const tableMB = numVectors * rowBytes / (1024 * 1024);
 
-  let [hnswPlacement, quantPlacement, fullPlacement] = placements[tier];
-  let promoted = false;
-
-  if (noQuant) {
-    quantPlacement = 'N/A';
-    const promoMap = {
-      'ULTRA-TIGHT': 'RAM', 'TIGHT': 'RAM', 'MODERATE': 'RAM', 'RELAXED': 'mmap (SSD)',
-    };
-    fullPlacement = promoMap[tier];
-    promoted = tier === 'MODERATE';
+  // Index size
+  let indexMB;
+  if (index.indexType === 'hnsw') {
+    // HNSW graph: each node stores ~(2 * m) neighbor pointers (8 bytes each) + vector copy
+    const graphMB = numVectors * (index.m * 2 * 8 + vectorBytes) / (1024 * 1024);
+    indexMB = graphMB * 1.2; // 20% overhead for internal structures
+  } else {
+    // IVFFlat: stores vectors in list buckets + centroid data
+    const listOverhead = index.lists * vectorBytes / (1024 * 1024);
+    indexMB = tableMB * 1.1 + listOverhead; // vectors re-stored in index + centroids
   }
 
-  return { tier, hnswPlacement, quantPlacement, fullPlacement, promoted };
-}
+  // shared_buffers: ideally holds the full index + hot table data
+  // Rule of thumb: 25% of total RAM, but must fit index
+  const idealSharedBuffersMB = indexMB + tableMB * 0.3; // index + 30% of table for hot rows
 
-// ---------------------------------------------------------------------------
-// Stage 5: Memory Sizing
-// ---------------------------------------------------------------------------
+  // effective_cache_size: total memory Postgres can use (incl. OS page cache)
+  // Should be ~75% of total RAM
+  const idealEffectiveCacheMB = indexMB + tableMB;
 
-export function sizeMemory(numVectors, dimensions, quantization, hnsw, latency) {
-  const fullMB = numVectors * dimensions * 4 / (1024 * 1024);
-  let quantMB = 0;
-  if (quantization === 'scalar') quantMB = numVectors * dimensions / (1024 * 1024);
-  else if (quantization === 'binary') quantMB = numVectors * dimensions / 8 / (1024 * 1024);
+  // maintenance_work_mem: needed for index builds
+  let maintenanceWorkMemMB;
+  if (index.indexType === 'hnsw') {
+    maintenanceWorkMemMB = Math.max(indexMB * 1.5, 1024); // HNSW builds need significant memory
+  } else {
+    maintenanceWorkMemMB = Math.max(tableMB * 0.5, 512); // IVFFlat is lighter
+  }
 
-  const hnswMB = numVectors * hnsw.m * 2 * 8 * 1.1 / (1024 * 1024);
+  // Total RAM needed
+  const pgOverheadMB = 512; // Postgres process overhead, WAL buffers, etc.
+  const osReserveMB = 1024; // OS + filesystem cache breathing room
+  const totalRequiredMB = idealEffectiveCacheMB + pgOverheadMB + osReserveMB;
 
-  let ramComponents = hnswMB;
-  if (latency.quantPlacement === 'RAM') ramComponents += quantMB;
-  if (latency.fullPlacement === 'RAM') ramComponents += fullMB;
-
-  let pageCache = 0;
-  if (latency.fullPlacement.includes('mmap') && quantization !== 'none')
-    pageCache = 0.10 * fullMB;
-  else if (latency.fullPlacement.includes('mmap') && quantization === 'none')
-    pageCache = 0.30 * fullMB;
-  if (latency.quantPlacement && latency.quantPlacement.includes('mmap'))
-    pageCache += 0.50 * quantMB;
-
-  const processOverhead = 500;
-  const mergeHeadroom = ramComponents * 0.10;
-  const totalMB = ramComponents + pageCache + processOverhead + mergeHeadroom;
-
-  let roundedGB = 256;
+  // Round up to nearest RAM tier
+  let roundedGB = RAM_TIERS[RAM_TIERS.length - 1];
   for (const tier of RAM_TIERS) {
-    if (tier * 1024 >= totalMB) { roundedGB = tier; break; }
+    if (tier * 1024 >= totalRequiredMB) { roundedGB = tier; break; }
   }
 
+  // Postgres config recommendations
+  const sharedBuffersGB = Math.max(Math.round(roundedGB * 0.25), 1);
+  const effectiveCacheSizeGB = Math.max(Math.round(roundedGB * 0.75), 2);
+
   return {
-    quantMB: Math.round(quantMB),
-    fullMB: Math.round(fullMB),
-    hnswMB: Math.round(hnswMB),
-    pageCacheMB: Math.round(pageCache),
-    processOverheadMB: processOverhead,
-    mergeHeadroomMB: Math.round(mergeHeadroom),
-    totalMB: Math.round(totalMB),
+    tableMB: Math.round(tableMB),
+    indexMB: Math.round(indexMB),
+    idealSharedBuffersMB: Math.round(idealSharedBuffersMB),
+    idealEffectiveCacheMB: Math.round(idealEffectiveCacheMB),
+    maintenanceWorkMemMB: Math.round(maintenanceWorkMemMB),
+    pgOverheadMB,
+    osReserveMB,
+    totalRequiredMB: Math.round(totalRequiredMB),
     roundedGB,
+    sharedBuffersGB,
+    effectiveCacheSizeGB,
   };
 }
 
 // ---------------------------------------------------------------------------
-// Stage 6: Disk Sizing
+// Stage 5: Disk Sizing
 // ---------------------------------------------------------------------------
 
-export function sizeDisk(numVectors, dimensions, memory, writePattern, peakWriteRate, batchSize, latency) {
-  const baseDisk = memory.fullMB + memory.quantMB + memory.hnswMB;
+export function sizeDisk(numVectors, dimensions, recall, memory, index) {
+  const vectorBytes = dimensions * recall.bytesPerDim;
+  const rowBytes = vectorBytes + TUPLE_OVERHEAD_BYTES;
 
-  let walMB;
-  if (writePattern === 'streaming') walMB = 2048;
-  else if (writePattern === 'batch') walMB = Math.max(batchSize * dimensions * 4 * 2 / (1024 * 1024), 1024);
-  else walMB = 1024;
+  // Table on disk
+  const tableGB = numVectors * rowBytes / (1024 * 1024 * 1024);
+  // Index on disk
+  const indexGB = memory.indexMB / 1024;
+  // WAL: estimate 2x table size for write headroom
+  const walGB = Math.max(tableGB * 2, 2);
+  // TOAST + overhead
+  const overheadGB = (tableGB + indexGB) * 0.3;
+  // Snapshot / backup headroom
+  const backupGB = tableGB + indexGB;
 
-  const mergeOverhead = baseDisk * 0.50;
-  const snapshotSpace = baseDisk * 1.0;
-  const totalMB = baseDisk + walMB + mergeOverhead + snapshotSpace;
-  const totalGB = Math.max(Math.ceil(totalMB / 1024), 30);
+  const totalGB = Math.max(Math.ceil(tableGB + indexGB + walGB + overheadGB + backupGB), 30);
 
-  const mmapInQuery = latency.fullPlacement.includes('mmap') ||
-    (latency.quantPlacement && latency.quantPlacement.includes('mmap'));
-  let diskType;
-  if (mmapInQuery && latency.tier === 'TIGHT') diskType = 'NVMe SSD (gp3 w/ provisioned IOPS)';
-  else diskType = 'Standard SSD (gp3)';
+  // Disk type recommendation
+  const needsHighIOPS = memory.totalRequiredMB > memory.roundedGB * 1024 * 0.8; // tight on RAM = more disk reads
+  const diskType = needsHighIOPS ? 'gp3 with provisioned IOPS' : 'gp3 (baseline 3,000 IOPS)';
 
   return {
-    baseMB: Math.round(baseDisk),
-    walMB: Math.round(walMB),
-    mergeOverheadMB: Math.round(mergeOverhead),
-    snapshotMB: Math.round(snapshotSpace),
+    tableGB: +tableGB.toFixed(1),
+    indexGB: +indexGB.toFixed(1),
+    walGB: +walGB.toFixed(1),
+    overheadGB: +overheadGB.toFixed(1),
+    backupGB: +backupGB.toFixed(1),
     totalGB,
     diskType,
   };
 }
 
 // ---------------------------------------------------------------------------
-// Stage 7: Compute Sizing
+// Stage 6: Compute Sizing
 // ---------------------------------------------------------------------------
 
 function dimBucket(dims) {
@@ -246,88 +268,90 @@ function dimBucket(dims) {
   return '2048-4096';
 }
 
-export function sizeCompute(dimensions, quantization, hnsw, latency, peakQPS, writePattern, peakWriteRate) {
-  const baseMs = CPU_BASE_MS[`${dimBucket(dimensions)}-${quantization}`];
-  const efAdjustment = hnsw.hnswEf / 64;
-  const perQueryBase = baseMs * efAdjustment;
+export function sizeCompute(dimensions, recall, index, peakQPS, writePattern, peakWriteRate) {
+  const storageKey = `${dimBucket(dimensions)}-${recall.storageType}`;
+  const baseMs = CPU_BASE_MS[storageKey] || 2.0;
 
-  let rescoreMs = 0;
-  if (hnsw.rescoreCandidates && latency.fullPlacement.includes('mmap'))
-    rescoreMs = hnsw.rescoreCandidates * 0.01;
-  else if (hnsw.rescoreCandidates)
-    rescoreMs = 0.1;
+  let efAdjustment = 1.0;
+  if (index.indexType === 'hnsw') {
+    efAdjustment = index.efSearch / 40; // normalize against baseline ef_search=40
+  } else {
+    efAdjustment = index.probes / 10; // normalize against baseline probes=10
+  }
+  efAdjustment = Math.max(efAdjustment, 0.5);
 
-  let mmapOverhead = 0;
-  if (quantization === 'none' && latency.fullPlacement.includes('mmap'))
-    mmapOverhead = 1.0;
-
-  const perQueryMs = perQueryBase + rescoreMs + mmapOverhead;
+  const perQueryMs = baseMs * efAdjustment;
   const coresForQueries = peakQPS * (perQueryMs / 1000);
 
-  const tightStreaming = latency.tier === 'TIGHT' && writePattern === 'streaming';
-  const tightBatch = latency.tier === 'TIGHT' && writePattern !== 'streaming';
-  const headroomPct = tightStreaming ? 100 : tightBatch ? 50 : 30;
+  // Headroom
+  const streamingWrites = writePattern === 'streaming';
+  const headroomPct = streamingWrites ? 80 : 30;
   const headroomCores = coresForQueries * (headroomPct / 100);
 
+  // Write cores
   let writeCores = 0;
   if (writePattern === 'streaming') {
-    const idxTime = INDEXING_TIME_MS[hnsw.m] || 3.0;
-    writeCores = peakWriteRate * (idxTime / 1000);
+    writeCores = peakWriteRate * 0.002; // ~2ms per insert with index maintenance
   }
 
-  const totalVcpus = Math.max(Math.ceil(coresForQueries + headroomCores + writeCores), 4);
+  // Postgres background processes: autovacuum, checkpointer, WAL writer
+  const bgCores = 2;
+
+  const totalVcpus = Math.max(Math.ceil(coresForQueries + headroomCores + writeCores + bgCores), 2);
 
   return {
-    perQueryBaseMs: +perQueryBase.toFixed(2),
+    perQueryBaseMs: +baseMs.toFixed(2),
     efAdjustment: +efAdjustment.toFixed(1),
-    rescoreMs: +rescoreMs.toFixed(2),
-    mmapOverheadMs: mmapOverhead,
     perQueryMs: +perQueryMs.toFixed(2),
     coresForQueries: +coresForQueries.toFixed(1),
     headroomPct,
     headroomCores: +headroomCores.toFixed(1),
     writeCores: +writeCores.toFixed(1),
+    bgCores,
     totalVcpus,
   };
 }
 
 // ---------------------------------------------------------------------------
-// Stage 9: Instance Selection
+// Stage 7: Instance Selection
 // ---------------------------------------------------------------------------
 
-export function selectInstance(compute, memory, disk) {
+export function selectInstance(compute, memory, disk, platform) {
   const vcpus = compute.totalVcpus;
   const ramGB = memory.roundedGB;
+  const preferredPlatform = platform || 'RDS';
 
+  // Determine family based on RAM:vCPU ratio
   let family, constraint, familyLabel;
-  if (ramGB > vcpus * 4) {
+  if (ramGB > vcpus * 8) {
     family = 'R'; constraint = 'memory'; familyLabel = 'R-series (memory-optimized)';
-  } else if (vcpus * 4 > ramGB) {
-    family = 'C'; constraint = 'compute'; familyLabel = 'C-series (compute-optimized)';
+  } else if (ramGB <= vcpus * 2) {
+    family = 'C'; constraint = 'compute'; familyLabel = 'C-series (compute-optimized, EC2 only)';
   } else {
     family = 'M'; constraint = 'balanced'; familyLabel = 'M-series (general-purpose)';
   }
 
-  const candidates = INSTANCES.filter(i => i.family === family).sort((a, b) => a.vcpus - b.vcpus);
+  // Filter by platform preference (C-series only on EC2)
+  let candidates = INSTANCES
+    .filter(i => i.family === family)
+    .filter(i => preferredPlatform === 'EC2' || i.platform === preferredPlatform)
+    .sort((a, b) => a.vcpus - b.vcpus);
+
+  // Fallback to M-series if no candidates
+  if (candidates.length === 0) {
+    family = 'M'; constraint = 'balanced'; familyLabel = 'M-series (general-purpose)';
+    candidates = INSTANCES
+      .filter(i => i.family === 'M')
+      .filter(i => preferredPlatform === 'EC2' || i.platform === preferredPlatform)
+      .sort((a, b) => a.vcpus - b.vcpus);
+  }
+
   let selected = candidates.find(i => i.vcpus >= vcpus && i.ram >= ramGB);
   let overprovisionNote = '';
 
-  if (selected && selected.vcpus > vcpus * 1.5) {
-    const idx = candidates.indexOf(selected);
-    if (idx > 0 && candidates[idx - 1].ram >= ramGB) {
-      const smaller = candidates[idx - 1];
-      overprovisionNote =
-        `Using ${smaller.name} (${smaller.vcpus} vCPU) instead of ` +
-        `${selected.name} (${selected.vcpus} vCPU) to avoid ` +
-        `${Math.round(selected.vcpus / vcpus * 100 - 100)}% overprovision. ` +
-        `${vcpus - smaller.vcpus} vCPU shortfall is within headroom.`;
-      selected = smaller;
-    }
-  }
-
   if (!selected) {
     selected = candidates[candidates.length - 1] || INSTANCES[INSTANCES.length - 1];
-    overprovisionNote = 'No exact fit; using largest available.';
+    overprovisionNote = 'Workload exceeds largest available instance; consider read replicas or partitioning.';
   }
 
   const monthly = selected.hourly * 730;
@@ -340,6 +364,7 @@ export function selectInstance(compute, memory, disk) {
     instanceType: selected.name,
     instanceVcpus: selected.vcpus,
     instanceRamGB: selected.ram,
+    platform: selected.platform,
     costOnDemandMo: Math.round(monthly + diskCost),
     costReservedMo: Math.round(reserved + diskCost),
     overprovisionNote,
@@ -347,32 +372,119 @@ export function selectInstance(compute, memory, disk) {
 }
 
 // ---------------------------------------------------------------------------
-// Future Optimizations
+// Stage 8: Postgres Configuration
 // ---------------------------------------------------------------------------
 
-export function suggestOptimizations(classification, recall, hnsw, latency, dimensions, topK, writePattern) {
-  const opts = [
-    'HA: add replication_factor=2 for failover (doubles infra cost). Recommended if P99 SLA is contractual.',
-  ];
+export function postgresConfig(memory, index, compute, writePattern) {
+  const config = {};
 
-  if (classification.cls === 'A' && recall.quant === 'scalar') {
-    opts.push(topK < 20
-      ? 'Binary quantization: 32x compression. Viable for top-k < 20; benchmark against recall target.'
-      : 'Binary quantization: expert opinion split at top-k >= 50. Test empirically.');
+  config.shared_buffers = `${memory.sharedBuffersGB}GB`;
+  config.effective_cache_size = `${memory.effectiveCacheSizeGB}GB`;
+  config.maintenance_work_mem = `${Math.round(memory.maintenanceWorkMemMB)}MB`;
+  config.work_mem = `${Math.max(Math.round(memory.roundedGB * 1024 / (compute.totalVcpus * 4)), 64)}MB`;
+
+  // Parallel workers
+  config.max_parallel_workers_per_gather = Math.min(Math.max(Math.floor(compute.totalVcpus / 4), 1), 4);
+  config.max_parallel_maintenance_workers = Math.min(Math.max(Math.floor(compute.totalVcpus / 2), 1), 7);
+
+  // pgvector-specific
+  if (index.indexType === 'hnsw') {
+    config['hnsw.ef_search'] = index.efSearch;
+  } else {
+    config['ivfflat.probes'] = index.probes;
   }
 
-  if (classification.cls === 'A' && dimensions >= 1536)
-    opts.push(`Matryoshka dimension reduction: test ${dimensions} -> ${Math.floor(dimensions / 2)} dims against recall target.`);
-
-  if (writePattern === 'batch') {
-    opts.push('Collection aliasing: build new collection per batch, swap alias atomically.');
-    opts.push('Autoscaling: scale replicas up during peak QPS window, down during off-peak.');
+  // WAL tuning for write-heavy workloads
+  if (writePattern === 'streaming') {
+    config.wal_buffers = '64MB';
+    config.checkpoint_completion_target = 0.9;
   }
 
-  if (classification.cls === 'C' && recall.quant === 'none')
-    opts.push('Scalar quantization: guide defaults to none for Class C + high recall. Test empirically.');
+  return config;
+}
+
+// ---------------------------------------------------------------------------
+// Stage 9: Optimization Suggestions
+// ---------------------------------------------------------------------------
+
+export function suggestOptimizations(classification, recall, index, dimensions, topK, numVectors) {
+  const opts = [];
+
+  opts.push('Read replicas: add 1-2 read replicas for HA and load distribution. Doubles/triples read throughput.');
+
+  if (recall.storageType === 'vector' && classification.cls === 'neural_text') {
+    opts.push('halfvec indexing: cast to halfvec for 2x index compression. Test recall impact: CREATE INDEX ON tbl USING hnsw ((embedding::halfvec(N)) halfvec_cosine_ops)');
+  }
+
+  if (index.indexType === 'hnsw' && numVectors > 5_000_000) {
+    opts.push('Partitioning: for >5M vectors, consider range or hash partitioning with per-partition indexes.');
+  }
+
+  if (index.indexType === 'ivfflat') {
+    opts.push('Rebuild IVFFlat indexes periodically: centroid quality degrades as data distribution shifts.');
+    opts.push('Consider HNSW: better recall at similar cost, no retraining needed. Slower builds but faster queries.');
+  }
+
+  if (index.indexType === 'hnsw' && index.efSearch > 200) {
+    opts.push(`Reduce hnsw.ef_search from ${index.efSearch} if recall has margin — lower ef_search = higher QPS.`);
+  }
+
+  if (dimensions >= 1536 && classification.cls === 'neural_text') {
+    opts.push(`Matryoshka reduction: test ${dimensions} → ${Math.floor(dimensions / 2)} dims against recall target.`);
+  }
+
+  opts.push('PLAIN storage: ALTER TABLE ... ALTER COLUMN embedding SET STORAGE PLAIN to avoid TOAST overhead for vectors.');
 
   return opts;
+}
+
+// ---------------------------------------------------------------------------
+// Stage 10: SQL Generation
+// ---------------------------------------------------------------------------
+
+export function generateSQL(datasetName, dimensions, classification, recall, index) {
+  const tableName = datasetName.toLowerCase().replace(/[^a-z0-9_]/g, '_').replace(/_+/g, '_');
+  const vecType = recall.useHalfvec ? `halfvec(${dimensions})` : `vector(${dimensions})`;
+  const opsClass = recall.useHalfvec
+    ? DISTANCE_OPS[classification.metric === 'Cosine' ? 'cosine' : classification.metric === 'L2 (Euclidean)' ? 'l2' : 'ip'].halfvecOps
+    : classification.pgOps;
+  const distOp = classification.metric === 'Cosine' ? '<=>' : classification.metric === 'L2 (Euclidean)' ? '<->' : '<#>';
+
+  const lines = [];
+  lines.push(`-- Table`);
+  lines.push(`CREATE TABLE ${tableName} (`);
+  lines.push(`    id bigserial PRIMARY KEY,`);
+  lines.push(`    content text,`);
+  lines.push(`    embedding ${vecType}`);
+  lines.push(`);`);
+  lines.push(``);
+  lines.push(`-- Optimize storage (avoid TOAST overhead)`);
+  lines.push(`ALTER TABLE ${tableName} ALTER COLUMN embedding SET STORAGE PLAIN;`);
+  lines.push(``);
+
+  if (index.indexType === 'hnsw') {
+    const colExpr = recall.useHalfvec ? `embedding` : `embedding`;
+    lines.push(`-- HNSW index`);
+    lines.push(`CREATE INDEX ON ${tableName} USING hnsw (${colExpr} ${opsClass}) WITH (m = ${index.m}, ef_construction = ${index.efConstruction});`);
+    lines.push(``);
+    lines.push(`-- Query-time settings`);
+    lines.push(`SET hnsw.ef_search = ${index.efSearch};`);
+  } else {
+    lines.push(`-- IVFFlat index`);
+    lines.push(`CREATE INDEX ON ${tableName} USING ivfflat (embedding ${opsClass}) WITH (lists = ${index.lists});`);
+    lines.push(``);
+    lines.push(`-- Query-time settings`);
+    lines.push(`SET ivfflat.probes = ${index.probes};`);
+  }
+
+  lines.push(``);
+  lines.push(`-- Example query`);
+  lines.push(`SELECT id, content, embedding ${distOp} $1 AS distance`);
+  lines.push(`FROM ${tableName}`);
+  lines.push(`ORDER BY embedding ${distOp} $1`);
+  lines.push(`LIMIT 10;`);
+
+  return lines.join('\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -392,26 +504,27 @@ export function sizeCluster(config) {
     p99LatencyMs,
     recallTarget,
     topK,
+    indexType = 'hnsw',
+    platform = 'RDS',
   } = config;
 
   const classification = classifyEmbeddings(embeddingType, dimensions);
   const recall = recallRegime(recallTarget, classification.cls);
-  const hnsw = hnswParams(recall.regime, topK, recall.quant, writePattern);
-  const latency = latencyAssess(p99LatencyMs, recall.quant);
-  const memory = sizeMemory(numVectors, dimensions, recall.quant, hnsw, latency);
-  const disk = sizeDisk(numVectors, dimensions, memory, writePattern, peakWriteRate, batchSize, latency);
-  const compute = sizeCompute(dimensions, recall.quant, hnsw, latency, peakQPS, writePattern, peakWriteRate);
-  const instance = selectInstance(compute, memory, disk);
-  const optimizations = suggestOptimizations(classification, recall, hnsw, latency, dimensions, topK, writePattern);
+  const index = indexStrategy(recall.regime, topK, numVectors, indexType);
+  const memory = sizeMemory(numVectors, dimensions, recall, index);
+  const disk = sizeDisk(numVectors, dimensions, recall, memory, index);
+  const compute = sizeCompute(dimensions, recall, index, peakQPS, writePattern, peakWriteRate);
+  const instance = selectInstance(compute, memory, disk, platform);
+  const pgConfig = postgresConfig(memory, index, compute, writePattern);
+  const optimizations = suggestOptimizations(classification, recall, index, dimensions, topK, numVectors);
+  const sql = generateSQL(datasetName, dimensions, classification, recall, index);
 
   return {
-    // Inputs
     datasetName, dimensions, numVectors, peakQPS, writePattern,
     peakWriteRate, batchSize, p99LatencyMs, recallTarget, topK,
-    // Stage outputs
-    classification, recall, hnsw, latency, memory, disk, compute, instance, optimizations,
-    // Topology (always single-node per design philosophy)
-    topology: { nodes: 1, shards: 1, replicas: 1 },
+    classification, recall, index, memory, disk, compute, instance,
+    pgConfig, optimizations, sql,
+    topology: { nodes: 1, readReplicas: 0 },
   };
 }
 
@@ -423,15 +536,15 @@ export function formatSummary(r) {
   const lines = [];
   const a = (s) => lines.push(s);
 
-  a('=' .repeat(64));
+  a('='.repeat(64));
   a(`  ARCHITECTURE SUMMARY — ${r.datasetName}`);
   a('='.repeat(64));
   a('');
   a(`  Dataset:         ${r.datasetName}`);
   a(`  Vectors:         ${r.numVectors.toLocaleString()}`);
   a(`  Dimensions:      ${r.dimensions}`);
-  a(`  Embedding Class: ${r.classification.cls} (${r.classification.label})`);
-  a(`  Distance Metric: ${r.classification.metric} (Qdrant: ${r.classification.qdrant})`);
+  a(`  Embedding Class: ${r.classification.label}`);
+  a(`  Distance Metric: ${r.classification.metric} (${r.classification.pgOps})`);
   a('');
   a('  SLA Requirements');
   a('  ' + '-'.repeat(30));
@@ -443,69 +556,61 @@ export function formatSummary(r) {
     ? `  Write Pattern:   ${r.writePattern} (${r.peakWriteRate}/s peak)`
     : `  Write Pattern:   ${r.writePattern} (batch size: ${r.batchSize.toLocaleString()})`);
   a('');
-  a('  Regime Classification');
+  a('  Storage Strategy');
   a('  ' + '-'.repeat(30));
   a(`  Recall Regime:   ${r.recall.regime}`);
-  a(`  Latency Tier:    ${r.latency.tier}`);
+  a(`  Vector Type:     ${r.recall.storageType}`);
+  a(`  Compression:     ${r.recall.compression}`);
   a('');
-  a('  Quantization Strategy');
+  a(`  Index Configuration (${r.index.indexType.toUpperCase()})`);
   a('  ' + '-'.repeat(30));
-  a(`  Method:          ${r.recall.quant}`);
-  a(`  Oversampling:    ${r.hnsw.oversampling || 'N/A'}`);
-  a(`  Rescore:         ${r.recall.rescore ? 'ON' : 'N/A'}`);
+  if (r.index.indexType === 'hnsw') {
+    a(`  m:               ${r.index.m}`);
+    a(`  ef_construction: ${r.index.efConstruction}`);
+    a(`  hnsw.ef_search:  ${r.index.efSearch}  (${r.index.efNote})`);
+  } else {
+    a(`  lists:           ${r.index.lists}`);
+    a(`  probes:          ${r.index.probes}`);
+  }
   a('');
-  a('  HNSW Parameters');
+  a('  Memory Sizing');
   a('  ' + '-'.repeat(30));
-  a(`  m:               ${r.hnsw.m}`);
-  a(`  ef_construct:    ${r.hnsw.efConstruct}`);
-  a(`  hnsw_ef:         ${r.hnsw.hnswEf}  (${r.hnsw.efNote})`);
+  a(`  Table data:       ${r.memory.tableMB.toLocaleString()} MB`);
+  a(`  Index:            ${r.memory.indexMB.toLocaleString()} MB`);
+  a(`  PG overhead:      ${r.memory.pgOverheadMB.toLocaleString()} MB`);
+  a(`  OS reserve:       ${r.memory.osReserveMB.toLocaleString()} MB`);
+  a(`  Total required:   ${r.memory.totalRequiredMB.toLocaleString()} MB → ${r.memory.roundedGB} GB`);
   a('');
-  a('  Storage Placement');
+  a('  PostgreSQL Configuration');
   a('  ' + '-'.repeat(30));
-  a(`  HNSW index:      ${r.latency.hnswPlacement}`);
-  a(`  Quantized vecs:  ${r.latency.quantPlacement}`);
-  a(`  Full vectors:    ${r.latency.fullPlacement}${r.latency.promoted ? ' (promoted: no-quant rule)' : ''}`);
+  for (const [k, v] of Object.entries(r.pgConfig)) {
+    a(`  ${k} = ${v}`);
+  }
   a('');
-  a('  Memory Calculation');
-  a('  ' + '-'.repeat(30));
-  if (r.memory.quantMB > 0) a(`  Quantized vecs:  ${r.memory.quantMB.toLocaleString()} MB`);
-  a(`  Full vectors:    ${r.memory.fullMB.toLocaleString()} MB`);
-  a(`  HNSW index:      ${r.memory.hnswMB.toLocaleString()} MB`);
-  a(`  Page cache:      ${r.memory.pageCacheMB.toLocaleString()} MB`);
-  a(`  Process overhead: ${r.memory.processOverheadMB.toLocaleString()} MB`);
-  a(`  Merge headroom:  ${r.memory.mergeHeadroomMB.toLocaleString()} MB`);
-  a(`  Total RAM:       ${r.memory.totalMB.toLocaleString()} MB → ${r.memory.roundedGB} GB`);
-  a('');
-  a('  Disk Calculation');
+  a('  Disk');
   a('  ' + '-'.repeat(30));
   a(`  Total disk:      ${r.disk.totalGB} GB`);
   a(`  Disk type:       ${r.disk.diskType}`);
   a('');
-  a('  Compute Calculation');
+  a('  Compute');
   a('  ' + '-'.repeat(30));
   a(`  Per-query time:  ${r.compute.perQueryMs}ms`);
-  a(`    base:          ${r.compute.perQueryBaseMs}ms (ef adjustment: ${r.compute.efAdjustment}x)`);
-  a(`    rescore:       ${r.compute.rescoreMs}ms`);
-  a(`    mmap overhead: ${r.compute.mmapOverheadMs}ms`);
   a(`  Cores for QPS:   ${r.compute.coresForQueries}`);
   a(`  Headroom (${r.compute.headroomPct}%):  ${r.compute.headroomCores}`);
   a(`  Write cores:     ${r.compute.writeCores}`);
+  a(`  BG processes:    ${r.compute.bgCores}`);
   a(`  Total vCPUs:     ${r.compute.totalVcpus}`);
-  a('');
-  a('  Topology');
-  a('  ' + '-'.repeat(30));
-  a(`  Nodes: ${r.topology.nodes}  Shards: ${r.topology.shards}  Replicas: ${r.topology.replicas}`);
-  a('  Single node. Present HA option (replication_factor=2) to customer.');
   a('');
   a('  Instance & Cost');
   a('  ' + '-'.repeat(30));
   a(`  Instance:        ${r.instance.instanceType} (${r.instance.instanceVcpus} vCPU, ${r.instance.instanceRamGB} GB)`);
+  a(`  Platform:        ${r.instance.platform}`);
   a(`  Constraint:      ${r.instance.dominantConstraint} → ${r.instance.instanceFamily}`);
   if (r.instance.overprovisionNote) a(`  Note:            ${r.instance.overprovisionNote}`);
   a(`  Cost (on-demand): $${r.instance.costOnDemandMo.toLocaleString()}/mo`);
   a(`  Cost (reserved):  $${r.instance.costReservedMo.toLocaleString()}/mo`);
   a('');
-  a('  Future Optimizations');
+  a('  Optimizations');
   a('  ' + '-'.repeat(30));
   r.optimizations.forEach((opt, i) => a(`  ${i + 1}. ${opt}`));
   a('');

@@ -1,55 +1,59 @@
-# Qdrant Cluster Sizing: Senior SA Take-Home
+# pgvector Sizing Tools
 
-Two Qdrant deployments sized, configured, benchmarked, and costed for a VP of Platform Engineering with 1M-vector workloads on different embedding models.
+Interactive sizing wizard and field guide for PostgreSQL + [pgvector](https://github.com/pgvector/pgvector) deployments. Input your workload requirements, get an architecture recommendation with instance selection, PostgreSQL configuration, and generated SQL.
 
-## The Punchline
+## Tools
 
-The VP assumed the 960-dimension dataset would need significantly less infrastructure than the 3072-dimension dataset. **The opposite is true.** Both land at the same instance class and cost (~$500/mo) because quantization eligibility and recall requirements dominate cost — not raw dimensions.
+| Asset | Description |
+|-------|-------------|
+| [**Sizing Wizard** (web)](https://vercel-test-mauve-seven-20.vercel.app) | Interactive wizard — input your requirements, get an architecture |
+| [**Field Guide**](pgvector-field-guide.md) | Decision-tree reference for sizing any pgvector deployment ([view as styled page](https://vercel-test-mauve-seven-20.vercel.app/field-guide.html)) |
 
-| | Scenario 1: Search Team | Scenario 2: Data Science Team |
+## What the Sizer Produces
+
+- **Instance selection**: RDS (M-series, R-series) or self-managed EC2 (C-series) with cost estimates
+- **PostgreSQL configuration**: `shared_buffers`, `effective_cache_size`, `maintenance_work_mem`, `work_mem`, parallel workers, and pgvector-specific settings (`hnsw.ef_search` or `ivfflat.probes`)
+- **Index strategy**: HNSW or IVFFlat with tuned parameters based on your recall target
+- **Vector type**: `vector` (float32) or `halfvec` (float16) based on embedding type and recall requirements
+- **Generated SQL**: Ready-to-run DDL for table, index, and example query
+
+## Example Scenarios
+
+Two illustrative scenarios are included in `scenarios.json`:
+
+| | Scenario 1: Text Search | Scenario 2: CV Features |
 |--|--|--|
 | Dataset | OpenAI dbpedia (3072d) | gist-960 (960d) |
 | Recall target | 95% @100 | 99% @10 |
 | QPS / P99 | 1,000 / 50ms | 3,000 / 500ms |
-| Quantization | Scalar int8 (4x compression) | None (full float32) |
-| **Measured recall** | **99.6%** (target: 95%) | **99.2%** (target: 99%) |
-| Instance | c6i.4xlarge | c6i.4xlarge |
-| Cost | ~$500/mo | ~$499/mo |
+| Vector type | halfvec (2x compression) | vector (full float32) |
 
-## Deliverables
+## Benchmark
 
-| File | What It Is |
-|------|-----------|
-| [**architecture_writeup.md**](architecture_writeup.md) | Cluster sizing with math, Qdrant configs, benchmark results, cost analysis |
-| [**vp_email.md**](vp_email.md) | Executive summary email to the VP |
-| [**qdrant_benchmark.py**](qdrant_benchmark.py) | Ingestion + recall/latency benchmark pipeline |
-
-## Run the Benchmark
+A benchmark script is included to validate sizing decisions against real pgvector performance:
 
 ```bash
 # Install dependencies
-pip install qdrant-client datasets numpy
+pip install psycopg2-binary datasets numpy
 
-# Start Qdrant locally
-docker run -d -p 6333:6333 qdrant/qdrant
+# Start Supabase locally (includes pgvector)
+npx supabase init && npx supabase start
 
-# Smoke test (10K vectors, ~2 min)
-python qdrant_benchmark.py --target docker --sample 0.01 --dataset both
+# Run benchmark against local Supabase
+python pgvector_benchmark.py --target local --sample 0.01 --dataset both
 
-# Full test (1M vectors, ~1 hr)
-python qdrant_benchmark.py --target docker --sample 1.0 --dataset both
-
-# Against Qdrant Cloud
-QDRANT_URL=https://... QDRANT_API_KEY=... \
-python qdrant_benchmark.py --target cloud --sample 0.05 --dataset both
+# Run against Supabase Cloud
+DATABASE_URL="postgresql://..." \
+python pgvector_benchmark.py --target cloud --sample 0.05 --dataset both
 ```
 
-## Bonus: Field Guide & Sizer Tools
+## Project Structure
 
-Built during the process of developing the architecture. These are the reusable frameworks behind the sizing decisions.
-
-| Asset | Description |
-|-------|-------------|
-| [**Field Guide**](qdrant-field-guide.md) | Decision-tree reference for sizing any Qdrant cluster ([view as styled page](https://vercel-test-mauve-seven-20.vercel.app/field-guide.html)) |
-| [**Cluster Sizer (web)**](https://vercel-test-mauve-seven-20.vercel.app) | Interactive wizard — input your requirements, get an architecture |
-| [**Cluster Sizer (CLI)**](qdrant_sizer_cli.js) | Same logic as the web sizer: `node qdrant_sizer_cli.js --file scenarios.json` |
+| File | Role |
+|------|------|
+| `sizer_engine.js` | Core sizing logic (ES module) — all constants, decision tables, and pipeline |
+| `index.html` | Interactive web wizard that imports `sizer_engine.js` |
+| `field-guide.html` | Styled viewer for the field guide markdown |
+| `pgvector-field-guide.md` | Decision-tree reference for sizing pgvector deployments |
+| `pgvector_benchmark.py` | Benchmark pipeline — ingests datasets, measures recall/latency |
+| `scenarios.json` | Example scenario inputs |

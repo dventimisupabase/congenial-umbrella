@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Qdrant Cluster Sizer</title>
+<title>pgvector Sizing Wizard</title>
 <style>
   :root {
     --bg: #09090b;
@@ -357,6 +357,19 @@
     margin-top: 0.5rem;
   }
 
+  .sql-block {
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1rem;
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    line-height: 1.6;
+    overflow-x: auto;
+    white-space: pre;
+    color: var(--text-muted);
+  }
+
   /* Responsive */
   @media (max-width: 500px) {
     .field-row { grid-template-columns: 1fr; }
@@ -368,8 +381,8 @@
 
 <div class="container">
   <header>
-    <h1>Qdrant Cluster Sizer</h1>
-    <p>Walk through discovery questions to produce a cluster architecture recommendation.</p>
+    <h1>pgvector Sizing Wizard</h1>
+    <p>Size a PostgreSQL + pgvector deployment: instance, memory, index parameters, and cost.</p>
   </header>
 
   <div class="progress" id="progress"></div>
@@ -380,9 +393,9 @@
       <span class="step-number">1</span>
       <span class="step-title">Embedding Type</span>
     </div>
-    <p class="step-desc">What kind of model produced the vectors? This determines quantization options and distance metric.</p>
+    <p class="step-desc">What kind of model produced the vectors? This determines whether halfvec indexing is viable and which distance operator to use.</p>
     <label>Dataset name</label>
-    <input type="text" id="dataset_name" placeholder="e.g., OpenAI dbpedia" value="">
+    <input type="text" id="dataset_name" placeholder="e.g., product embeddings" value="">
     <label>Embedding type</label>
     <div class="radio-group" id="rg-embedding">
       <label class="radio-option" data-value="neural_text">
@@ -406,7 +419,7 @@
         <span class="radio-dot"></span>
         <div>
           <div class="radio-label">Classical CV features</div>
-          <div class="radio-sublabel">GIST, SIFT, HOG, etc. (Euclidean distance)</div>
+          <div class="radio-sublabel">GIST, SIFT, HOG, etc. (L2 distance)</div>
         </div>
       </label>
       <label class="radio-option" data-value="other">
@@ -435,8 +448,8 @@
     <div class="field-row">
       <div>
         <label>Dimensions</label>
-        <input type="number" id="dimensions" placeholder="e.g., 3072" min="1" max="65536">
-        <div id="err-dimensions" class="field-error">Enter a value between 1 and 65,536.</div>
+        <input type="number" id="dimensions" placeholder="e.g., 1536" min="1" max="16000">
+        <div id="err-dimensions" class="field-error">Enter a value between 1 and 16,000.</div>
       </div>
       <div>
         <label>Number of vectors</label>
@@ -456,7 +469,7 @@
       <span class="step-number">3</span>
       <span class="step-title">Traffic & Write Pattern</span>
     </div>
-    <p class="step-desc">How much read and write traffic will the cluster handle?</p>
+    <p class="step-desc">How much read and write traffic will the database handle?</p>
     <label>Peak read QPS</label>
     <input type="number" id="peak_qps" placeholder="e.g., 1000" min="1">
     <div id="err-peak_qps" class="field-error">Enter a positive integer.</div>
@@ -467,7 +480,7 @@
         <span class="radio-dot"></span>
         <div>
           <div class="radio-label">Streaming</div>
-          <div class="radio-sublabel">Continuous writes, concurrent with reads</div>
+          <div class="radio-sublabel">Continuous inserts, concurrent with reads</div>
         </div>
       </label>
       <label class="radio-option" data-value="batch">
@@ -489,7 +502,7 @@
     </div>
     <div id="err-write" class="field-error">Please select a write pattern.</div>
     <div id="write-detail" style="display:none">
-      <label id="write-detail-label">Peak write rate (vectors/s)</label>
+      <label id="write-detail-label">Peak write rate (rows/s)</label>
       <input type="number" id="write_detail_val" placeholder="e.g., 200" min="0">
       <div id="err-write_detail" class="field-error">Enter a valid number.</div>
     </div>
@@ -499,13 +512,13 @@
     </div>
   </div>
 
-  <!-- Step 4: SLA -->
+  <!-- Step 4: SLA & Index -->
   <div class="step" data-step="3">
     <div class="step-header">
       <span class="step-number">4</span>
-      <span class="step-title">SLA Requirements</span>
+      <span class="step-title">SLA & Index Type</span>
     </div>
-    <p class="step-desc">What latency, recall, and result-set size must the cluster deliver?</p>
+    <p class="step-desc">What latency, recall, and result-set size do you need?</p>
     <div class="field-row">
       <div>
         <label>P99 latency SLA (ms)</label>
@@ -513,14 +526,52 @@
         <div id="err-p99" class="field-error">Enter a value between 1 and 60,000.</div>
       </div>
       <div>
-        <label>Top-k</label>
-        <input type="number" id="top_k" placeholder="e.g., 100" min="1" max="10000">
+        <label>Top-k (LIMIT)</label>
+        <input type="number" id="top_k" placeholder="e.g., 10" min="1" max="10000">
         <div id="err-topk" class="field-error">Enter a value between 1 and 10,000.</div>
       </div>
     </div>
     <label>Recall target (%)</label>
     <input type="number" id="recall_target" placeholder="e.g., 95" min="1" max="100" step="any">
     <div id="err-recall" class="field-error">Enter a value between 1 and 100.</div>
+    <label>Index type</label>
+    <div class="radio-group" id="rg-index">
+      <label class="radio-option selected" data-value="hnsw">
+        <input type="radio" name="index_type" value="hnsw" checked>
+        <span class="radio-dot"></span>
+        <div>
+          <div class="radio-label">HNSW</div>
+          <div class="radio-sublabel">Better recall, no retraining needed. Slower builds, more memory.</div>
+        </div>
+      </label>
+      <label class="radio-option" data-value="ivfflat">
+        <input type="radio" name="index_type" value="ivfflat">
+        <span class="radio-dot"></span>
+        <div>
+          <div class="radio-label">IVFFlat</div>
+          <div class="radio-sublabel">Faster builds, less memory. Needs periodic retraining as data shifts.</div>
+        </div>
+      </label>
+    </div>
+    <label>Platform</label>
+    <div class="radio-group" id="rg-platform">
+      <label class="radio-option selected" data-value="RDS">
+        <input type="radio" name="platform" value="RDS" checked>
+        <span class="radio-dot"></span>
+        <div>
+          <div class="radio-label">RDS for PostgreSQL</div>
+          <div class="radio-sublabel">Managed, M-series and R-series instances</div>
+        </div>
+      </label>
+      <label class="radio-option" data-value="EC2">
+        <input type="radio" name="platform" value="EC2">
+        <span class="radio-dot"></span>
+        <div>
+          <div class="radio-label">Self-managed (EC2)</div>
+          <div class="radio-sublabel">Full control, C-series available for compute-heavy workloads</div>
+        </div>
+      </label>
+    </div>
     <div class="btn-row">
       <button onclick="prev()">Back</button>
       <button class="primary" onclick="calculate()">Calculate Architecture</button>
@@ -542,18 +593,8 @@
 </div>
 
 <script type="module">
-// ---------------------------------------------------------------------------
-// Import sizing engine — single source of truth
-// ---------------------------------------------------------------------------
-import {
-  classifyEmbeddings, recallRegime, hnswParams, latencyAssess,
-  sizeMemory, sizeDisk, sizeCompute, selectInstance, suggestOptimizations,
-  sizeCluster,
-} from './sizer_engine.js';
+import { sizeCluster } from './sizer_engine.js';
 
-// ---------------------------------------------------------------------------
-// Wizard navigation
-// ---------------------------------------------------------------------------
 const TOTAL_STEPS = 5;
 let currentStep = 0;
 
@@ -583,13 +624,9 @@ function next() {
   showStep(currentStep + 1);
 }
 
-function restart() {
-  showStep(0);
-}
+function restart() { showStep(0); }
 
-// ---------------------------------------------------------------------------
 // Radio group handling
-// ---------------------------------------------------------------------------
 document.querySelectorAll('.radio-option').forEach(opt => {
   opt.addEventListener('click', () => {
     const group = opt.closest('.radio-group');
@@ -597,7 +634,6 @@ document.querySelectorAll('.radio-option').forEach(opt => {
     opt.classList.add('selected');
     opt.querySelector('input').checked = true;
 
-    // Show/hide write detail field
     if (group.id === 'rg-write') {
       const val = opt.dataset.value;
       const detail = document.getElementById('write-detail');
@@ -605,11 +641,11 @@ document.querySelectorAll('.radio-option').forEach(opt => {
       const input = document.getElementById('write_detail_val');
       if (val === 'streaming') {
         detail.style.display = 'block';
-        label.textContent = 'Peak write rate (vectors/s)';
+        label.textContent = 'Peak write rate (rows/s)';
         input.placeholder = 'e.g., 200';
       } else if (val === 'batch') {
         detail.style.display = 'block';
-        label.textContent = 'Batch size (vectors per load)';
+        label.textContent = 'Batch size (rows per load)';
         input.placeholder = 'e.g., 100000';
       } else {
         detail.style.display = 'none';
@@ -619,9 +655,7 @@ document.querySelectorAll('.radio-option').forEach(opt => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // Validation
-// ---------------------------------------------------------------------------
 function clearErrors() {
   document.querySelectorAll('.field-error').forEach(e => e.classList.remove('visible'));
 }
@@ -654,7 +688,7 @@ function validateStep(step) {
   } else if (step === 1) {
     const d = getInt('dimensions');
     const n = getInt('num_vectors');
-    if (!d || d < 1 || d > 65536) { showError('err-dimensions'); ok = false; }
+    if (!d || d < 1 || d > 16000) { showError('err-dimensions'); ok = false; }
     if (!n || n < 1) { showError('err-num_vectors'); ok = false; }
   } else if (step === 2) {
     const q = getInt('peak_qps');
@@ -676,9 +710,7 @@ function validateStep(step) {
   return ok;
 }
 
-// ---------------------------------------------------------------------------
-// Main calculation (uses imported sizeCluster from sizer_engine.js)
-// ---------------------------------------------------------------------------
+// Main calculation
 let lastResult = null;
 
 function calculate() {
@@ -700,100 +732,76 @@ function calculate() {
     p99LatencyMs: getInt('p99_latency_ms'),
     recallTarget: recallPct > 1 ? recallPct / 100 : recallPct,
     topK: getInt('top_k'),
+    indexType: getRadio('index_type') || 'hnsw',
+    platform: getRadio('platform') || 'RDS',
   });
 
-  // Flatten for renderer compatibility
-  lastResult = {
-    datasetName: r.datasetName, dims: r.dimensions, nv: r.numVectors,
-    qps: r.peakQPS, wp: r.writePattern, writeRate: r.peakWriteRate,
-    batchSize: r.batchSize, p99: r.p99LatencyMs, topK: r.topK,
-    recall: r.recallTarget,
-    emb: r.classification,
-    rec: r.recall,
-    hnsw: { m: r.hnsw.m, efC: r.hnsw.efConstruct, ef: r.hnsw.hnswEf,
-            efNote: r.hnsw.efNote, os: r.hnsw.oversampling, rc: r.hnsw.rescoreCandidates },
-    lat: { tier: r.latency.tier, hP: r.latency.hnswPlacement,
-           qP: r.latency.quantPlacement, fP: r.latency.fullPlacement,
-           promoted: r.latency.promoted },
-    mem: { quantMB: r.memory.quantMB, fullMB: r.memory.fullMB, hnswMB: r.memory.hnswMB,
-           pageCacheMB: r.memory.pageCacheMB, overheadMB: r.memory.processOverheadMB,
-           mergeMB: r.memory.mergeHeadroomMB, totalMB: r.memory.totalMB, roundedGB: r.memory.roundedGB },
-    disk: { totalGB: r.disk.totalGB, diskType: r.disk.diskType },
-    comp: { pqTime: r.compute.perQueryMs, pqBase: r.compute.perQueryBaseMs,
-            efAdj: r.compute.efAdjustment, rescoreMs: r.compute.rescoreMs,
-            mmapOH: r.compute.mmapOverheadMs, cores: r.compute.coresForQueries,
-            headPct: r.compute.headroomPct, headCores: r.compute.headroomCores,
-            writeCores: r.compute.writeCores, total: r.compute.totalVcpus },
-    inst: { name: r.instance.instanceType, vcpus: r.instance.instanceVcpus,
-            ram: r.instance.instanceRamGB, familyLabel: r.instance.instanceFamily,
-            constraint: r.instance.dominantConstraint,
-            onDemand: r.instance.costOnDemandMo, reserved: r.instance.costReservedMo,
-            note: r.instance.overprovisionNote },
-    opts: r.optimizations,
-  };
-
-  renderResults(lastResult);
+  lastResult = r;
+  renderResults(r);
   showStep(4);
 }
 
-// Expose functions to onclick handlers (module scope doesn't auto-expose to global)
 window.next = next;
 window.prev = prev;
 window.restart = restart;
 window.calculate = calculate;
 window.copyResults = copyResults;
 
-// ---------------------------------------------------------------------------
 // Render results
-// ---------------------------------------------------------------------------
 function renderResults(r) {
   const $ = document.getElementById('results');
+  const regimeTag = r.recall.regime === 'RELAXED' ? 'tag-green' : r.recall.regime === 'MODERATE' ? 'tag-amber' : 'tag-blue';
 
-  const regimeTag = r.rec.regime === 'RELAXED' ? 'tag-green' : r.rec.regime === 'MODERATE' ? 'tag-amber' : 'tag-blue';
-  const tierTag = r.lat.tier === 'TIGHT' ? 'tag-amber' : r.lat.tier === 'ULTRA-TIGHT' ? 'tag-blue' : 'tag-green';
+  const indexSection = r.index.indexType === 'hnsw' ? `
+    <div class="result-row"><span class="result-key">m</span><span class="result-val">${r.index.m}</span></div>
+    <div class="result-row"><span class="result-key">ef_construction</span><span class="result-val">${r.index.efConstruction}</span></div>
+    <div class="result-row"><span class="result-key">hnsw.ef_search</span><span class="result-val">${r.index.efSearch} <span style="color:var(--text-dim);font-size:0.6875rem">(${r.index.efNote})</span></span></div>
+  ` : `
+    <div class="result-row"><span class="result-key">lists</span><span class="result-val">${r.index.lists}</span></div>
+    <div class="result-row"><span class="result-key">probes</span><span class="result-val">${r.index.probes}</span></div>
+  `;
+
+  // Format pgConfig
+  const pgConfigRows = Object.entries(r.pgConfig).map(([k, v]) =>
+    `<div class="result-row"><span class="result-key">${k}</span><span class="result-val">${v}</span></div>`
+  ).join('');
 
   $.innerHTML = `
     <div class="hero-cost">
-      <div class="amount">$${r.inst.onDemand.toLocaleString()}/mo</div>
-      <div class="sublabel">on-demand ($${r.inst.reserved.toLocaleString()}/mo reserved)</div>
-      <div class="instance">${r.inst.name} (${r.inst.vcpus} vCPU, ${r.inst.ram} GB RAM)</div>
-      ${r.inst.note ? `<div class="result-note">${r.inst.note}</div>` : ''}
+      <div class="amount">$${r.instance.costOnDemandMo.toLocaleString()}/mo</div>
+      <div class="sublabel">on-demand ($${r.instance.costReservedMo.toLocaleString()}/mo reserved)</div>
+      <div class="instance">${r.instance.instanceType} (${r.instance.instanceVcpus} vCPU, ${r.instance.instanceRamGB} GB RAM)</div>
+      <div class="sublabel">${r.instance.platform}</div>
+      ${r.instance.overprovisionNote ? `<div class="result-note">${r.instance.overprovisionNote}</div>` : ''}
     </div>
 
     <div class="result-section">
       <h3>Classification</h3>
       <div class="result-row"><span class="result-key">Dataset</span><span class="result-val">${r.datasetName}</span></div>
-      <div class="result-row"><span class="result-key">Vectors</span><span class="result-val">${r.nv.toLocaleString()} x ${r.dims}d</span></div>
-      <div class="result-row"><span class="result-key">Embedding Class</span><span class="result-val">${r.emb.cls} (${r.emb.label})</span></div>
-      <div class="result-row"><span class="result-key">Distance Metric</span><span class="result-val">${r.emb.metric} (${r.emb.qdrant})</span></div>
-      <div class="result-row"><span class="result-key">Recall Regime</span><span class="result-val"><span class="tag ${regimeTag}">${r.rec.regime}</span></span></div>
-      <div class="result-row"><span class="result-key">Latency Tier</span><span class="result-val"><span class="tag ${tierTag}">${r.lat.tier}</span></span></div>
+      <div class="result-row"><span class="result-key">Vectors</span><span class="result-val">${r.numVectors.toLocaleString()} x ${r.dimensions}d</span></div>
+      <div class="result-row"><span class="result-key">Embedding Class</span><span class="result-val">${r.classification.label}</span></div>
+      <div class="result-row"><span class="result-key">Distance Metric</span><span class="result-val">${r.classification.metric} (${r.classification.pgOps})</span></div>
+      <div class="result-row"><span class="result-key">Recall Regime</span><span class="result-val"><span class="tag ${regimeTag}">${r.recall.regime}</span></span></div>
+      <div class="result-row"><span class="result-key">Vector Type</span><span class="result-val">${r.recall.storageType}</span></div>
+      <div class="result-row"><span class="result-key">Compression</span><span class="result-val">${r.recall.compression}</span></div>
     </div>
 
     <div class="result-section">
-      <h3>Quantization & HNSW</h3>
-      <div class="result-row"><span class="result-key">Quantization</span><span class="result-val">${r.rec.quant}${r.rec.rescore ? ' + rescore' : ''}</span></div>
-      ${r.hnsw.os ? `<div class="result-row"><span class="result-key">Oversampling</span><span class="result-val">${r.hnsw.os}x (${r.hnsw.rc} candidates)</span></div>` : ''}
-      <div class="result-row"><span class="result-key">m</span><span class="result-val">${r.hnsw.m}</span></div>
-      <div class="result-row"><span class="result-key">ef_construct</span><span class="result-val">${r.hnsw.efC}</span></div>
-      <div class="result-row"><span class="result-key">hnsw_ef</span><span class="result-val">${r.hnsw.ef} <span style="color:var(--text-dim);font-size:0.6875rem">(${r.hnsw.efNote})</span></span></div>
-    </div>
-
-    <div class="result-section">
-      <h3>Storage Placement</h3>
-      <div class="result-row"><span class="result-key">HNSW index</span><span class="result-val">${r.lat.hP}</span></div>
-      <div class="result-row"><span class="result-key">Quantized vectors</span><span class="result-val">${r.lat.qP}</span></div>
-      <div class="result-row"><span class="result-key">Full vectors</span><span class="result-val">${r.lat.fP}${r.lat.promoted ? ' (promoted)' : ''}</span></div>
+      <h3>Index (${r.index.indexType.toUpperCase()})</h3>
+      ${indexSection}
     </div>
 
     <div class="result-section">
       <h3>Memory</h3>
-      ${r.mem.quantMB > 0 ? `<div class="result-row"><span class="result-key">Quantized vectors</span><span class="result-val">${r.mem.quantMB.toLocaleString()} MB</span></div>` : ''}
-      <div class="result-row"><span class="result-key">Full vectors</span><span class="result-val">${r.mem.fullMB.toLocaleString()} MB</span></div>
-      <div class="result-row"><span class="result-key">HNSW index</span><span class="result-val">${r.mem.hnswMB.toLocaleString()} MB</span></div>
-      <div class="result-row"><span class="result-key">Page cache</span><span class="result-val">${r.mem.pageCacheMB.toLocaleString()} MB</span></div>
-      <div class="result-row"><span class="result-key">Overhead + merge</span><span class="result-val">${(r.mem.overheadMB + r.mem.mergeMB).toLocaleString()} MB</span></div>
-      <div class="result-row"><span class="result-key">Total RAM</span><span class="result-val highlight">${r.mem.roundedGB} GB</span></div>
+      <div class="result-row"><span class="result-key">Table data</span><span class="result-val">${r.memory.tableMB.toLocaleString()} MB</span></div>
+      <div class="result-row"><span class="result-key">Index</span><span class="result-val">${r.memory.indexMB.toLocaleString()} MB</span></div>
+      <div class="result-row"><span class="result-key">PG overhead + OS</span><span class="result-val">${(r.memory.pgOverheadMB + r.memory.osReserveMB).toLocaleString()} MB</span></div>
+      <div class="result-row"><span class="result-key">Total RAM</span><span class="result-val highlight">${r.memory.roundedGB} GB</span></div>
+    </div>
+
+    <div class="result-section">
+      <h3>PostgreSQL Configuration</h3>
+      ${pgConfigRows}
     </div>
 
     <div class="result-section">
@@ -804,60 +812,75 @@ function renderResults(r) {
 
     <div class="result-section">
       <h3>Compute</h3>
-      <div class="result-row"><span class="result-key">Per-query time</span><span class="result-val">${r.comp.pqTime} ms</span></div>
-      <div class="result-row"><span class="result-key">Cores for QPS</span><span class="result-val">${r.comp.cores}</span></div>
-      <div class="result-row"><span class="result-key">Headroom (${r.comp.headPct}%)</span><span class="result-val">${r.comp.headCores}</span></div>
-      <div class="result-row"><span class="result-key">Write cores</span><span class="result-val">${r.comp.writeCores}</span></div>
-      <div class="result-row"><span class="result-key">Total vCPUs</span><span class="result-val highlight">${r.comp.total}</span></div>
+      <div class="result-row"><span class="result-key">Per-query time</span><span class="result-val">${r.compute.perQueryMs} ms</span></div>
+      <div class="result-row"><span class="result-key">Cores for QPS</span><span class="result-val">${r.compute.coresForQueries}</span></div>
+      <div class="result-row"><span class="result-key">Headroom (${r.compute.headroomPct}%)</span><span class="result-val">${r.compute.headroomCores}</span></div>
+      <div class="result-row"><span class="result-key">Write cores</span><span class="result-val">${r.compute.writeCores}</span></div>
+      <div class="result-row"><span class="result-key">BG processes</span><span class="result-val">${r.compute.bgCores}</span></div>
+      <div class="result-row"><span class="result-key">Total vCPUs</span><span class="result-val highlight">${r.compute.totalVcpus}</span></div>
     </div>
 
     <div class="result-section">
       <h3>Topology</h3>
-      <div class="result-row"><span class="result-key">Nodes / Shards / Replicas</span><span class="result-val">1 / 1 / 1</span></div>
-      <div class="result-note">Single node. Present HA option (replication_factor=2) to customer.</div>
+      <div class="result-row"><span class="result-key">Primary</span><span class="result-val">1 node</span></div>
+      <div class="result-row"><span class="result-key">Read replicas</span><span class="result-val">0 (add for HA)</span></div>
     </div>
 
     <div class="result-section">
-      <h3>Future Optimizations</h3>
-      ${r.opts.map(o => `<div class="future-opt">${o}</div>`).join('')}
+      <h3>Generated SQL</h3>
+      <div class="sql-block">${escapeHTML(r.sql)}</div>
+    </div>
+
+    <div class="result-section">
+      <h3>Optimization Opportunities</h3>
+      ${r.optimizations.map(o => `<div class="future-opt">${o}</div>`).join('')}
     </div>
   `;
 }
 
-// ---------------------------------------------------------------------------
+function escapeHTML(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 // Copy as text
-// ---------------------------------------------------------------------------
 function copyResults() {
+  if (!lastResult) return;
   const r = lastResult;
-  if (!r) return;
+
+  const indexInfo = r.index.indexType === 'hnsw'
+    ? `Index: HNSW m=${r.index.m}, ef_construction=${r.index.efConstruction}, ef_search=${r.index.efSearch} (${r.index.efNote})`
+    : `Index: IVFFlat lists=${r.index.lists}, probes=${r.index.probes}`;
+
   const lines = [
-    `ARCHITECTURE SUMMARY - ${r.datasetName}`,
+    `pgvector ARCHITECTURE SUMMARY - ${r.datasetName}`,
     `${'='.repeat(50)}`,
     `Dataset: ${r.datasetName}`,
-    `Vectors: ${r.nv.toLocaleString()} x ${r.dims}d`,
-    `Embedding Class: ${r.emb.cls} (${r.emb.label})`,
-    `Distance: ${r.emb.metric} (${r.emb.qdrant})`,
+    `Vectors: ${r.numVectors.toLocaleString()} x ${r.dimensions}d`,
+    `Embedding: ${r.classification.label}`,
+    `Distance: ${r.classification.metric} (${r.classification.pgOps})`,
+    `Vector type: ${r.recall.storageType} (${r.recall.compression})`,
     ``,
-    `SLA: ${r.qps.toLocaleString()} QPS, ${r.p99}ms P99, ${Math.round(r.recall*100)}% recall, top-${r.topK}`,
-    `Regime: ${r.rec.regime} | Tier: ${r.lat.tier} | Write: ${r.wp}`,
+    `SLA: ${r.peakQPS.toLocaleString()} QPS, ${r.p99LatencyMs}ms P99, ${Math.round(r.recallTarget*100)}% recall, top-${r.topK}`,
+    `Regime: ${r.recall.regime} | Write: ${r.writePattern}`,
     ``,
-    `Quantization: ${r.rec.quant}${r.rec.rescore ? ' + rescore' : ''}`,
-    r.hnsw.os ? `Oversampling: ${r.hnsw.os}x (${r.hnsw.rc} candidates)` : null,
-    `HNSW: m=${r.hnsw.m}, ef_construct=${r.hnsw.efC}, hnsw_ef=${r.hnsw.ef} (${r.hnsw.efNote})`,
+    indexInfo,
     ``,
-    `Storage: HNSW=${r.lat.hP}, Quant=${r.lat.qP}, Full=${r.lat.fP}${r.lat.promoted ? ' (promoted)' : ''}`,
-    `RAM: ${r.mem.roundedGB} GB (${r.mem.totalMB.toLocaleString()} MB calculated)`,
+    `RAM: ${r.memory.roundedGB} GB (${r.memory.totalRequiredMB.toLocaleString()} MB calculated)`,
     `Disk: ${r.disk.totalGB} GB (${r.disk.diskType})`,
-    `vCPUs: ${r.comp.total} (${r.comp.pqTime}ms/query, ${r.comp.headPct}% headroom)`,
+    `vCPUs: ${r.compute.totalVcpus} (${r.compute.perQueryMs}ms/query, ${r.compute.headroomPct}% headroom)`,
     ``,
-    `Instance: ${r.inst.name} (${r.inst.vcpus} vCPU, ${r.inst.ram} GB)`,
-    r.inst.note ? `Note: ${r.inst.note}` : null,
-    `Cost: $${r.inst.onDemand}/mo on-demand, $${r.inst.reserved}/mo reserved`,
+    `PostgreSQL Config:`,
+    ...Object.entries(r.pgConfig).map(([k, v]) => `  ${k} = ${v}`),
     ``,
-    `Topology: 1 node, 1 shard, 1 replica`,
+    `Instance: ${r.instance.instanceType} (${r.instance.instanceVcpus} vCPU, ${r.instance.instanceRamGB} GB) [${r.instance.platform}]`,
+    r.instance.overprovisionNote ? `Note: ${r.instance.overprovisionNote}` : null,
+    `Cost: $${r.instance.costOnDemandMo}/mo on-demand, $${r.instance.costReservedMo}/mo reserved`,
     ``,
-    `Future Optimizations:`,
-    ...r.opts.map((o,i) => `  ${i+1}. ${o}`),
+    `SQL:`,
+    r.sql,
+    ``,
+    `Optimizations:`,
+    ...r.optimizations.map((o, i) => `  ${i + 1}. ${o}`),
   ].filter(l => l !== null).join('\n');
 
   navigator.clipboard.writeText(lines).then(() => {
@@ -868,7 +891,6 @@ function copyResults() {
   });
 }
 
-// Init
 updateProgress();
 </script>
 </body>
