@@ -6,8 +6,8 @@ Interactive sizing wizard and field guide for PostgreSQL + [pgvector](https://gi
 
 | Asset | Description |
 |-------|-------------|
-| [**Sizing Wizard** (web)](https://vercel-test-mauve-seven-20.vercel.app) | Interactive wizard — input your requirements, get an architecture |
-| [**Field Guide**](pgvector-field-guide.md) | Decision-tree reference for sizing any pgvector deployment ([view as styled page](https://vercel-test-mauve-seven-20.vercel.app/field-guide.html)) |
+| [**Sizing Wizard** (web)](https://congenial-umbrella-ashy.vercel.app) | Interactive wizard — input your requirements, get an architecture |
+| [**Field Guide**](pgvector-field-guide.md) | Decision-tree reference for sizing any pgvector deployment ([view as styled page](https://congenial-umbrella-ashy.vercel.app/field-guide.html)) |
 
 ## What the Sizer Produces
 
