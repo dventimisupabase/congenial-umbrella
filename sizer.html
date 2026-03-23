@@ -1,0 +1,897 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>pgvector Sizing Wizard</title>
+<style>
+  :root {
+    --bg: #09090b;
+    --bg-card: #18181b;
+    --bg-input: #27272a;
+    --border: #3f3f46;
+    --border-focus: #a1a1aa;
+    --text: #fafafa;
+    --text-muted: #a1a1aa;
+    --text-dim: #71717a;
+    --accent: #3b82f6;
+    --accent-hover: #2563eb;
+    --green: #22c55e;
+    --amber: #f59e0b;
+    --red: #ef4444;
+    --mono: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    --radius: 8px;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: var(--sans);
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    min-height: 100vh;
+  }
+
+  .container {
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 2rem 1.5rem 4rem;
+  }
+
+  header {
+    text-align: center;
+    margin-bottom: 2.5rem;
+    padding-bottom: 1.5rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  header h1 {
+    font-size: 1.5rem;
+    font-weight: 600;
+    letter-spacing: -0.025em;
+    margin-bottom: 0.25rem;
+  }
+
+  header p {
+    color: var(--text-muted);
+    font-size: 0.875rem;
+  }
+
+  /* Wizard steps */
+  .step { display: none; }
+  .step.active { display: block; animation: fadeIn 0.2s ease; }
+
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .step-header {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 1.25rem;
+  }
+
+  .step-number {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: #fff;
+    font-size: 0.75rem;
+    font-weight: 600;
+    flex-shrink: 0;
+  }
+
+  .step-title {
+    font-size: 1.125rem;
+    font-weight: 600;
+    letter-spacing: -0.015em;
+  }
+
+  .step-desc {
+    color: var(--text-muted);
+    font-size: 0.8125rem;
+    margin-bottom: 1.25rem;
+    line-height: 1.5;
+  }
+
+  /* Progress bar */
+  .progress {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 2rem;
+  }
+
+  .progress-segment {
+    flex: 1;
+    height: 3px;
+    background: var(--border);
+    border-radius: 2px;
+    transition: background 0.3s;
+  }
+
+  .progress-segment.done { background: var(--accent); }
+  .progress-segment.current { background: var(--accent); opacity: 0.5; }
+
+  /* Form elements */
+  label {
+    display: block;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    color: var(--text-muted);
+    margin-bottom: 0.375rem;
+  }
+
+  input[type="text"],
+  input[type="number"] {
+    width: 100%;
+    padding: 0.625rem 0.75rem;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text);
+    font-size: 0.875rem;
+    font-family: var(--mono);
+    outline: none;
+    transition: border-color 0.15s;
+    margin-bottom: 1rem;
+  }
+
+  input:focus { border-color: var(--border-focus); }
+
+  input::-webkit-outer-spin-button,
+  input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+  input[type=number] { -moz-appearance: textfield; }
+
+  .radio-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+  }
+
+  .radio-option {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.75rem 1rem;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+  }
+
+  .radio-option:hover { border-color: var(--border-focus); }
+  .radio-option.selected {
+    border-color: var(--accent);
+    background: rgba(59, 130, 246, 0.08);
+  }
+
+  .radio-option input { display: none; }
+
+  .radio-dot {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    border: 2px solid var(--border);
+    flex-shrink: 0;
+    transition: border-color 0.15s, background 0.15s;
+    position: relative;
+  }
+
+  .radio-option.selected .radio-dot {
+    border-color: var(--accent);
+    background: var(--accent);
+  }
+
+  .radio-option.selected .radio-dot::after {
+    content: '';
+    position: absolute;
+    top: 3px; left: 3px;
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: #fff;
+  }
+
+  .radio-label {
+    font-size: 0.875rem;
+    font-weight: 500;
+  }
+
+  .radio-sublabel {
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    margin-top: 0.125rem;
+  }
+
+  .field-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+  }
+
+  .field-error {
+    color: var(--red);
+    font-size: 0.75rem;
+    margin-top: -0.75rem;
+    margin-bottom: 0.75rem;
+    display: none;
+  }
+
+  .field-error.visible { display: block; }
+
+  /* Buttons */
+  .btn-row {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 1.5rem;
+    gap: 0.75rem;
+  }
+
+  button {
+    padding: 0.625rem 1.25rem;
+    border-radius: var(--radius);
+    font-size: 0.875rem;
+    font-weight: 500;
+    cursor: pointer;
+    border: 1px solid var(--border);
+    background: var(--bg-input);
+    color: var(--text);
+    transition: background 0.15s, border-color 0.15s;
+  }
+
+  button:hover { background: var(--border); }
+
+  button.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+  }
+
+  button.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  /* Results */
+  .result-section {
+    margin-bottom: 1.5rem;
+  }
+
+  .result-section h3 {
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-dim);
+    margin-bottom: 0.75rem;
+    padding-bottom: 0.375rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .result-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding: 0.375rem 0;
+    font-size: 0.8125rem;
+  }
+
+  .result-key { color: var(--text-muted); }
+
+  .result-val {
+    font-family: var(--mono);
+    font-size: 0.8125rem;
+    color: var(--text);
+    text-align: right;
+  }
+
+  .result-val.highlight {
+    color: var(--green);
+    font-weight: 600;
+  }
+
+  .result-note {
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    padding: 0.25rem 0 0.25rem 0;
+    font-style: italic;
+  }
+
+  .tag {
+    display: inline-block;
+    padding: 0.125rem 0.5rem;
+    border-radius: 4px;
+    font-size: 0.6875rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+
+  .tag-blue { background: rgba(59,130,246,0.15); color: #60a5fa; }
+  .tag-green { background: rgba(34,197,94,0.15); color: #4ade80; }
+  .tag-amber { background: rgba(245,158,11,0.15); color: #fbbf24; }
+
+  .future-opt {
+    font-size: 0.8125rem;
+    color: var(--text-muted);
+    padding: 0.5rem 0.75rem;
+    background: var(--bg-input);
+    border-radius: var(--radius);
+    margin-bottom: 0.375rem;
+    border-left: 2px solid var(--border);
+  }
+
+  .hero-cost {
+    text-align: center;
+    padding: 1.5rem;
+    background: var(--bg-input);
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    margin-bottom: 1.5rem;
+  }
+
+  .hero-cost .amount {
+    font-family: var(--mono);
+    font-size: 2rem;
+    font-weight: 700;
+    color: var(--green);
+  }
+
+  .hero-cost .sublabel {
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    margin-top: 0.25rem;
+  }
+
+  .hero-cost .instance {
+    font-family: var(--mono);
+    font-size: 0.875rem;
+    color: var(--text-muted);
+    margin-top: 0.5rem;
+  }
+
+  .sql-block {
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1rem;
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    line-height: 1.6;
+    overflow-x: auto;
+    white-space: pre;
+    color: var(--text-muted);
+  }
+
+  /* Responsive */
+  @media (max-width: 500px) {
+    .field-row { grid-template-columns: 1fr; }
+    .container { padding: 1.25rem 1rem 3rem; }
+  }
+</style>
+</head>
+<body>
+
+<div class="container">
+  <header>
+    <h1>pgvector Sizing Wizard</h1>
+    <p>Size a PostgreSQL + pgvector deployment: instance, memory, index parameters, and cost.</p>
+  </header>
+
+  <div class="progress" id="progress"></div>
+
+  <!-- Step 1: Embedding Type -->
+  <div class="step active" data-step="0">
+    <div class="step-header">
+      <span class="step-number">1</span>
+      <span class="step-title">Embedding Type</span>
+    </div>
+    <p class="step-desc">What kind of model produced the vectors? This determines whether halfvec indexing is viable and which distance operator to use.</p>
+    <label>Dataset name</label>
+    <input type="text" id="dataset_name" placeholder="e.g., product embeddings" value="">
+    <label>Embedding type</label>
+    <div class="radio-group" id="rg-embedding">
+      <label class="radio-option" data-value="neural_text">
+        <input type="radio" name="embedding_type" value="neural_text">
+        <span class="radio-dot"></span>
+        <div>
+          <div class="radio-label">Neural text model</div>
+          <div class="radio-sublabel">OpenAI, Cohere, BGE, E5, etc.</div>
+        </div>
+      </label>
+      <label class="radio-option" data-value="neural_vision">
+        <input type="radio" name="embedding_type" value="neural_vision">
+        <span class="radio-dot"></span>
+        <div>
+          <div class="radio-label">Neural vision model</div>
+          <div class="radio-sublabel">CLIP, DINOv2, etc.</div>
+        </div>
+      </label>
+      <label class="radio-option" data-value="classical_cv">
+        <input type="radio" name="embedding_type" value="classical_cv">
+        <span class="radio-dot"></span>
+        <div>
+          <div class="radio-label">Classical CV features</div>
+          <div class="radio-sublabel">GIST, SIFT, HOG, etc. (L2 distance)</div>
+        </div>
+      </label>
+      <label class="radio-option" data-value="other">
+        <input type="radio" name="embedding_type" value="other">
+        <span class="radio-dot"></span>
+        <div>
+          <div class="radio-label">Other / Unknown</div>
+          <div class="radio-sublabel">Will use conservative defaults</div>
+        </div>
+      </label>
+    </div>
+    <div id="err-embedding" class="field-error">Please select an embedding type.</div>
+    <div class="btn-row">
+      <div></div>
+      <button class="primary" onclick="next()">Continue</button>
+    </div>
+  </div>
+
+  <!-- Step 2: Dimensions & Scale -->
+  <div class="step" data-step="1">
+    <div class="step-header">
+      <span class="step-number">2</span>
+      <span class="step-title">Dataset Scale</span>
+    </div>
+    <p class="step-desc">How many vectors, and how large is each one?</p>
+    <div class="field-row">
+      <div>
+        <label>Dimensions</label>
+        <input type="number" id="dimensions" placeholder="e.g., 1536" min="1" max="16000">
+        <div id="err-dimensions" class="field-error">Enter a value between 1 and 16,000.</div>
+      </div>
+      <div>
+        <label>Number of vectors</label>
+        <input type="number" id="num_vectors" placeholder="e.g., 1000000" min="1">
+        <div id="err-num_vectors" class="field-error">Enter a positive integer.</div>
+      </div>
+    </div>
+    <div class="btn-row">
+      <button onclick="prev()">Back</button>
+      <button class="primary" onclick="next()">Continue</button>
+    </div>
+  </div>
+
+  <!-- Step 3: QPS & Write Pattern -->
+  <div class="step" data-step="2">
+    <div class="step-header">
+      <span class="step-number">3</span>
+      <span class="step-title">Traffic & Write Pattern</span>
+    </div>
+    <p class="step-desc">How much read and write traffic will the database handle?</p>
+    <label>Peak read QPS</label>
+    <input type="number" id="peak_qps" placeholder="e.g., 1000" min="1">
+    <div id="err-peak_qps" class="field-error">Enter a positive integer.</div>
+    <label>Write pattern</label>
+    <div class="radio-group" id="rg-write">
+      <label class="radio-option" data-value="streaming">
+        <input type="radio" name="write_pattern" value="streaming">
+        <span class="radio-dot"></span>
+        <div>
+          <div class="radio-label">Streaming</div>
+          <div class="radio-sublabel">Continuous inserts, concurrent with reads</div>
+        </div>
+      </label>
+      <label class="radio-option" data-value="batch">
+        <input type="radio" name="write_pattern" value="batch">
+        <span class="radio-dot"></span>
+        <div>
+          <div class="radio-label">Batch</div>
+          <div class="radio-sublabel">Periodic bulk loads, no concurrent reads during writes</div>
+        </div>
+      </label>
+      <label class="radio-option" data-value="static">
+        <input type="radio" name="write_pattern" value="static">
+        <span class="radio-dot"></span>
+        <div>
+          <div class="radio-label">Rare / Static</div>
+          <div class="radio-sublabel">Load once, mostly read</div>
+        </div>
+      </label>
+    </div>
+    <div id="err-write" class="field-error">Please select a write pattern.</div>
+    <div id="write-detail" style="display:none">
+      <label id="write-detail-label">Peak write rate (rows/s)</label>
+      <input type="number" id="write_detail_val" placeholder="e.g., 200" min="0">
+      <div id="err-write_detail" class="field-error">Enter a valid number.</div>
+    </div>
+    <div class="btn-row">
+      <button onclick="prev()">Back</button>
+      <button class="primary" onclick="next()">Continue</button>
+    </div>
+  </div>
+
+  <!-- Step 4: SLA & Index -->
+  <div class="step" data-step="3">
+    <div class="step-header">
+      <span class="step-number">4</span>
+      <span class="step-title">SLA & Index Type</span>
+    </div>
+    <p class="step-desc">What latency, recall, and result-set size do you need?</p>
+    <div class="field-row">
+      <div>
+        <label>P99 latency SLA (ms)</label>
+        <input type="number" id="p99_latency_ms" placeholder="e.g., 50" min="1" max="60000">
+        <div id="err-p99" class="field-error">Enter a value between 1 and 60,000.</div>
+      </div>
+      <div>
+        <label>Top-k (LIMIT)</label>
+        <input type="number" id="top_k" placeholder="e.g., 10" min="1" max="10000">
+        <div id="err-topk" class="field-error">Enter a value between 1 and 10,000.</div>
+      </div>
+    </div>
+    <label>Recall target (%)</label>
+    <input type="number" id="recall_target" placeholder="e.g., 95" min="1" max="100" step="any">
+    <div id="err-recall" class="field-error">Enter a value between 1 and 100.</div>
+    <label>Index type</label>
+    <div class="radio-group" id="rg-index">
+      <label class="radio-option selected" data-value="hnsw">
+        <input type="radio" name="index_type" value="hnsw" checked>
+        <span class="radio-dot"></span>
+        <div>
+          <div class="radio-label">HNSW</div>
+          <div class="radio-sublabel">Better recall, no retraining needed. Slower builds, more memory.</div>
+        </div>
+      </label>
+      <label class="radio-option" data-value="ivfflat">
+        <input type="radio" name="index_type" value="ivfflat">
+        <span class="radio-dot"></span>
+        <div>
+          <div class="radio-label">IVFFlat</div>
+          <div class="radio-sublabel">Faster builds, less memory. Needs periodic retraining as data shifts.</div>
+        </div>
+      </label>
+    </div>
+    <label>Platform</label>
+    <div class="radio-group" id="rg-platform">
+      <label class="radio-option selected" data-value="RDS">
+        <input type="radio" name="platform" value="RDS" checked>
+        <span class="radio-dot"></span>
+        <div>
+          <div class="radio-label">RDS for PostgreSQL</div>
+          <div class="radio-sublabel">Managed, M-series and R-series instances</div>
+        </div>
+      </label>
+      <label class="radio-option" data-value="EC2">
+        <input type="radio" name="platform" value="EC2">
+        <span class="radio-dot"></span>
+        <div>
+          <div class="radio-label">Self-managed (EC2)</div>
+          <div class="radio-sublabel">Full control, C-series available for compute-heavy workloads</div>
+        </div>
+      </label>
+    </div>
+    <div class="btn-row">
+      <button onclick="prev()">Back</button>
+      <button class="primary" onclick="calculate()">Calculate Architecture</button>
+    </div>
+  </div>
+
+  <!-- Step 5: Results -->
+  <div class="step" data-step="4">
+    <div class="step-header">
+      <span class="step-number" style="background:var(--green)">&#10003;</span>
+      <span class="step-title">Architecture Recommendation</span>
+    </div>
+    <div id="results"></div>
+    <div class="btn-row">
+      <button onclick="restart()">Start Over</button>
+      <button class="primary" onclick="copyResults()">Copy as Text</button>
+    </div>
+  </div>
+</div>
+
+<script type="module">
+import { sizeCluster } from './sizer_engine.js';
+
+const TOTAL_STEPS = 5;
+let currentStep = 0;
+
+function showStep(n) {
+  document.querySelectorAll('.step').forEach(s => s.classList.remove('active'));
+  document.querySelector(`.step[data-step="${n}"]`).classList.add('active');
+  currentStep = n;
+  updateProgress();
+}
+
+function updateProgress() {
+  const bar = document.getElementById('progress');
+  bar.innerHTML = '';
+  for (let i = 0; i < TOTAL_STEPS; i++) {
+    const seg = document.createElement('div');
+    seg.className = 'progress-segment';
+    if (i < currentStep) seg.classList.add('done');
+    else if (i === currentStep) seg.classList.add('current');
+    bar.appendChild(seg);
+  }
+}
+
+function prev() { showStep(currentStep - 1); }
+
+function next() {
+  if (!validateStep(currentStep)) return;
+  showStep(currentStep + 1);
+}
+
+function restart() { showStep(0); }
+
+// Radio group handling
+document.querySelectorAll('.radio-option').forEach(opt => {
+  opt.addEventListener('click', () => {
+    const group = opt.closest('.radio-group');
+    group.querySelectorAll('.radio-option').forEach(o => o.classList.remove('selected'));
+    opt.classList.add('selected');
+    opt.querySelector('input').checked = true;
+
+    if (group.id === 'rg-write') {
+      const val = opt.dataset.value;
+      const detail = document.getElementById('write-detail');
+      const label = document.getElementById('write-detail-label');
+      const input = document.getElementById('write_detail_val');
+      if (val === 'streaming') {
+        detail.style.display = 'block';
+        label.textContent = 'Peak write rate (rows/s)';
+        input.placeholder = 'e.g., 200';
+      } else if (val === 'batch') {
+        detail.style.display = 'block';
+        label.textContent = 'Batch size (rows per load)';
+        input.placeholder = 'e.g., 100000';
+      } else {
+        detail.style.display = 'none';
+        input.value = '';
+      }
+    }
+  });
+});
+
+// Validation
+function clearErrors() {
+  document.querySelectorAll('.field-error').forEach(e => e.classList.remove('visible'));
+}
+
+function showError(id) {
+  document.getElementById(id).classList.add('visible');
+}
+
+function getRadio(name) {
+  const el = document.querySelector(`input[name="${name}"]:checked`);
+  return el ? el.value : null;
+}
+
+function getInt(id) {
+  const v = parseInt(document.getElementById(id).value, 10);
+  return isNaN(v) ? null : v;
+}
+
+function getFloat(id) {
+  const v = parseFloat(document.getElementById(id).value);
+  return isNaN(v) ? null : v;
+}
+
+function validateStep(step) {
+  clearErrors();
+  let ok = true;
+
+  if (step === 0) {
+    if (!getRadio('embedding_type')) { showError('err-embedding'); ok = false; }
+  } else if (step === 1) {
+    const d = getInt('dimensions');
+    const n = getInt('num_vectors');
+    if (!d || d < 1 || d > 16000) { showError('err-dimensions'); ok = false; }
+    if (!n || n < 1) { showError('err-num_vectors'); ok = false; }
+  } else if (step === 2) {
+    const q = getInt('peak_qps');
+    if (!q || q < 1) { showError('err-peak_qps'); ok = false; }
+    if (!getRadio('write_pattern')) { showError('err-write'); ok = false; }
+    const wp = getRadio('write_pattern');
+    if (wp === 'streaming' || wp === 'batch') {
+      const v = getInt('write_detail_val');
+      if (v === null || v < 0) { showError('err-write_detail'); ok = false; }
+    }
+  } else if (step === 3) {
+    const p = getInt('p99_latency_ms');
+    const t = getInt('top_k');
+    const r = getFloat('recall_target');
+    if (!p || p < 1 || p > 60000) { showError('err-p99'); ok = false; }
+    if (!t || t < 1 || t > 10000) { showError('err-topk'); ok = false; }
+    if (r === null || r < 1 || r > 100) { showError('err-recall'); ok = false; }
+  }
+  return ok;
+}
+
+// Main calculation
+let lastResult = null;
+
+function calculate() {
+  if (!validateStep(currentStep)) return;
+
+  const wp = getRadio('write_pattern');
+  const wdv = getInt('write_detail_val') || 0;
+  const recallPct = getFloat('recall_target');
+
+  const r = sizeCluster({
+    datasetName: document.getElementById('dataset_name').value.trim() || 'unnamed',
+    embeddingType: getRadio('embedding_type'),
+    dimensions: getInt('dimensions'),
+    numVectors: getInt('num_vectors'),
+    peakQPS: getInt('peak_qps'),
+    writePattern: wp,
+    peakWriteRate: wp === 'streaming' ? wdv : 0,
+    batchSize: wp === 'batch' ? wdv : 0,
+    p99LatencyMs: getInt('p99_latency_ms'),
+    recallTarget: recallPct > 1 ? recallPct / 100 : recallPct,
+    topK: getInt('top_k'),
+    indexType: getRadio('index_type') || 'hnsw',
+    platform: getRadio('platform') || 'RDS',
+  });
+
+  lastResult = r;
+  renderResults(r);
+  showStep(4);
+}
+
+window.next = next;
+window.prev = prev;
+window.restart = restart;
+window.calculate = calculate;
+window.copyResults = copyResults;
+
+// Render results
+function renderResults(r) {
+  const $ = document.getElementById('results');
+  const regimeTag = r.recall.regime === 'RELAXED' ? 'tag-green' : r.recall.regime === 'MODERATE' ? 'tag-amber' : 'tag-blue';
+
+  const indexSection = r.index.indexType === 'hnsw' ? `
+    <div class="result-row"><span class="result-key">m</span><span class="result-val">${r.index.m}</span></div>
+    <div class="result-row"><span class="result-key">ef_construction</span><span class="result-val">${r.index.efConstruction}</span></div>
+    <div class="result-row"><span class="result-key">hnsw.ef_search</span><span class="result-val">${r.index.efSearch} <span style="color:var(--text-dim);font-size:0.6875rem">(${r.index.efNote})</span></span></div>
+  ` : `
+    <div class="result-row"><span class="result-key">lists</span><span class="result-val">${r.index.lists}</span></div>
+    <div class="result-row"><span class="result-key">probes</span><span class="result-val">${r.index.probes}</span></div>
+  `;
+
+  // Format pgConfig
+  const pgConfigRows = Object.entries(r.pgConfig).map(([k, v]) =>
+    `<div class="result-row"><span class="result-key">${k}</span><span class="result-val">${v}</span></div>`
+  ).join('');
+
+  $.innerHTML = `
+    <div class="hero-cost">
+      <div class="amount">$${r.instance.costOnDemandMo.toLocaleString()}/mo</div>
+      <div class="sublabel">on-demand ($${r.instance.costReservedMo.toLocaleString()}/mo reserved)</div>
+      <div class="instance">${r.instance.instanceType} (${r.instance.instanceVcpus} vCPU, ${r.instance.instanceRamGB} GB RAM)</div>
+      <div class="sublabel">${r.instance.platform}</div>
+      ${r.instance.overprovisionNote ? `<div class="result-note">${r.instance.overprovisionNote}</div>` : ''}
+    </div>
+
+    <div class="result-section">
+      <h3>Classification</h3>
+      <div class="result-row"><span class="result-key">Dataset</span><span class="result-val">${r.datasetName}</span></div>
+      <div class="result-row"><span class="result-key">Vectors</span><span class="result-val">${r.numVectors.toLocaleString()} x ${r.dimensions}d</span></div>
+      <div class="result-row"><span class="result-key">Embedding Class</span><span class="result-val">${r.classification.label}</span></div>
+      <div class="result-row"><span class="result-key">Distance Metric</span><span class="result-val">${r.classification.metric} (${r.classification.pgOps})</span></div>
+      <div class="result-row"><span class="result-key">Recall Regime</span><span class="result-val"><span class="tag ${regimeTag}">${r.recall.regime}</span></span></div>
+      <div class="result-row"><span class="result-key">Vector Type</span><span class="result-val">${r.recall.storageType}</span></div>
+      <div class="result-row"><span class="result-key">Compression</span><span class="result-val">${r.recall.compression}</span></div>
+    </div>
+
+    <div class="result-section">
+      <h3>Index (${r.index.indexType.toUpperCase()})</h3>
+      ${indexSection}
+    </div>
+
+    <div class="result-section">
+      <h3>Memory</h3>
+      <div class="result-row"><span class="result-key">Table data</span><span class="result-val">${r.memory.tableMB.toLocaleString()} MB</span></div>
+      <div class="result-row"><span class="result-key">Index</span><span class="result-val">${r.memory.indexMB.toLocaleString()} MB</span></div>
+      <div class="result-row"><span class="result-key">PG overhead + OS</span><span class="result-val">${(r.memory.pgOverheadMB + r.memory.osReserveMB).toLocaleString()} MB</span></div>
+      <div class="result-row"><span class="result-key">Total RAM</span><span class="result-val highlight">${r.memory.roundedGB} GB</span></div>
+    </div>
+
+    <div class="result-section">
+      <h3>PostgreSQL Configuration</h3>
+      ${pgConfigRows}
+    </div>
+
+    <div class="result-section">
+      <h3>Disk</h3>
+      <div class="result-row"><span class="result-key">Total disk</span><span class="result-val">${r.disk.totalGB} GB</span></div>
+      <div class="result-row"><span class="result-key">Disk type</span><span class="result-val">${r.disk.diskType}</span></div>
+    </div>
+
+    <div class="result-section">
+      <h3>Compute</h3>
+      <div class="result-row"><span class="result-key">Per-query time</span><span class="result-val">${r.compute.perQueryMs} ms</span></div>
+      <div class="result-row"><span class="result-key">Cores for QPS</span><span class="result-val">${r.compute.coresForQueries}</span></div>
+      <div class="result-row"><span class="result-key">Headroom (${r.compute.headroomPct}%)</span><span class="result-val">${r.compute.headroomCores}</span></div>
+      <div class="result-row"><span class="result-key">Write cores</span><span class="result-val">${r.compute.writeCores}</span></div>
+      <div class="result-row"><span class="result-key">BG processes</span><span class="result-val">${r.compute.bgCores}</span></div>
+      <div class="result-row"><span class="result-key">Total vCPUs</span><span class="result-val highlight">${r.compute.totalVcpus}</span></div>
+    </div>
+
+    <div class="result-section">
+      <h3>Topology</h3>
+      <div class="result-row"><span class="result-key">Primary</span><span class="result-val">1 node</span></div>
+      <div class="result-row"><span class="result-key">Read replicas</span><span class="result-val">0 (add for HA)</span></div>
+    </div>
+
+    <div class="result-section">
+      <h3>Generated SQL</h3>
+      <div class="sql-block">${escapeHTML(r.sql)}</div>
+    </div>
+
+    <div class="result-section">
+      <h3>Optimization Opportunities</h3>
+      ${r.optimizations.map(o => `<div class="future-opt">${o}</div>`).join('')}
+    </div>
+  `;
+}
+
+function escapeHTML(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// Copy as text
+function copyResults() {
+  if (!lastResult) return;
+  const r = lastResult;
+
+  const indexInfo = r.index.indexType === 'hnsw'
+    ? `Index: HNSW m=${r.index.m}, ef_construction=${r.index.efConstruction}, ef_search=${r.index.efSearch} (${r.index.efNote})`
+    : `Index: IVFFlat lists=${r.index.lists}, probes=${r.index.probes}`;
+
+  const lines = [
+    `pgvector ARCHITECTURE SUMMARY - ${r.datasetName}`,
+    `${'='.repeat(50)}`,
+    `Dataset: ${r.datasetName}`,
+    `Vectors: ${r.numVectors.toLocaleString()} x ${r.dimensions}d`,
+    `Embedding: ${r.classification.label}`,
+    `Distance: ${r.classification.metric} (${r.classification.pgOps})`,
+    `Vector type: ${r.recall.storageType} (${r.recall.compression})`,
+    ``,
+    `SLA: ${r.peakQPS.toLocaleString()} QPS, ${r.p99LatencyMs}ms P99, ${Math.round(r.recallTarget*100)}% recall, top-${r.topK}`,
+    `Regime: ${r.recall.regime} | Write: ${r.writePattern}`,
+    ``,
+    indexInfo,
+    ``,
+    `RAM: ${r.memory.roundedGB} GB (${r.memory.totalRequiredMB.toLocaleString()} MB calculated)`,
+    `Disk: ${r.disk.totalGB} GB (${r.disk.diskType})`,
+    `vCPUs: ${r.compute.totalVcpus} (${r.compute.perQueryMs}ms/query, ${r.compute.headroomPct}% headroom)`,
+    ``,
+    `PostgreSQL Config:`,
+    ...Object.entries(r.pgConfig).map(([k, v]) => `  ${k} = ${v}`),
+    ``,
+    `Instance: ${r.instance.instanceType} (${r.instance.instanceVcpus} vCPU, ${r.instance.instanceRamGB} GB) [${r.instance.platform}]`,
+    r.instance.overprovisionNote ? `Note: ${r.instance.overprovisionNote}` : null,
+    `Cost: $${r.instance.costOnDemandMo}/mo on-demand, $${r.instance.costReservedMo}/mo reserved`,
+    ``,
+    `SQL:`,
+    r.sql,
+    ``,
+    `Optimizations:`,
+    ...r.optimizations.map((o, i) => `  ${i + 1}. ${o}`),
+  ].filter(l => l !== null).join('\n');
+
+  navigator.clipboard.writeText(lines).then(() => {
+    const btn = document.querySelector('.step[data-step="4"] .primary');
+    const orig = btn.textContent;
+    btn.textContent = 'Copied!';
+    setTimeout(() => btn.textContent = orig, 1500);
+  });
+}
+
+updateProgress();
+</script>
+</body>
+</html>
