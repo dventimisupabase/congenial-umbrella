@@ -272,13 +272,9 @@ def _load_gist_test_data():
     try:
         ds_neighbors = load_dataset(
             "open-vdb/gist-960-euclidean", "neighbors", split="neighbors")
-        neighbor_col = [c for c in ds_neighbors.column_names
-                        if "neighbor" in c.lower() or "idx" in c.lower()]
-        if neighbor_col:
-            ground_truth = [row[neighbor_col[0]] for row in ds_neighbors]
-        else:
-            ground_truth = [row[ds_neighbors.column_names[0]] for row in ds_neighbors]
-        print(f"  Loaded {len(ground_truth)} ground truth rows")
+        ground_truth = [row["neighbors_id"] for row in ds_neighbors]
+        print(f"  Loaded {len(ground_truth)} ground truth rows "
+              f"({len(ground_truth[0])} neighbors each)")
     except Exception as e:
         print(f"  WARNING: Could not load ground truth neighbors: {e}")
         print(f"  Will use exact search for ground truth instead.")
