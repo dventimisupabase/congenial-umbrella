@@ -95,6 +95,16 @@ The sizer's index size formula is calibrated against measured values:
 | dbpedia (3072d halfvec, m=16) | 7,935 MB | 7,813 MB | 2% |
 | gist-960 (960d vector, m=24) | 7,050 MB | 7,678 MB | 9% |
 
+## Do You Actually Need All This?
+
+The sizer and field guide are designed for workloads with **specific SLA targets** — sustained QPS, latency budgets, recall constraints. But data from ~60,000 Supabase organizations shows that most real vector workloads are much simpler:
+
+- **93% have fewer than 1M vector rows.** Median DB size at 100K–1M rows is 2.1 GB.
+- **At 1M–10M rows, 60% run on Micro or Small.** They don't need 1K QPS — they're doing 10–100 queries/second alongside their regular application.
+- **If the index fits in shared_buffers and QPS is modest (< 100), almost any tier works.**
+
+Use the full sizing pipeline when you have defined QPS/latency/recall targets for a production vector search feature. For a RAG chatbot, product search, or prototype — start on a smaller tier and scale up if needed. The field guide has a [Real-World Usage Patterns](pgvector-field-guide.md#real-world-usage-patterns) section with more detail.
+
 ## Test Scenarios
 
 Two scenarios are included in `scenarios.json` and used throughout the field guide:

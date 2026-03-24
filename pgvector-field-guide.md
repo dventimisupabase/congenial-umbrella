@@ -1395,6 +1395,63 @@ tuning that hasn't been validated yet.
 
 ---
 
+## Real-World Usage Patterns
+
+The preceding stages are designed for workloads with **specific SLA targets** — target QPS,
+latency budgets, recall constraints. But most real-world pgvector deployments don't start
+there. Data from Supabase production workloads across ~60,000 organizations shows a very
+different picture:
+
+### Instance Distribution by Vector Scale
+
+| Vector rows | Orgs | Micro | Small | Medium | Large+ |
+|---|---|---|---|---|---|
+| < 10K | 46,691 | 16% | 3% | 1% | 81% |
+| 10K–100K | 9,216 | 26% | 8% | 1% | 65% |
+| 100K–1M | 3,483 | 36% | 19% | 4% | 41% |
+| 1M–10M | 811 | 31% | 29% | 11% | 29% |
+| 10M–100M | 164 | 30% | 24% | 17% | 29% |
+| 100M+ | 20 | 15% | 5% | 5% | 75% |
+
+### What This Tells Us
+
+1. **Most vector workloads are small.** 93% of organizations with vectors have fewer than
+   1M rows. The median database size at 100K–1M rows is just 2.1 GB — comfortably fits
+   on a Micro.
+
+2. **Instance size is often driven by the application, not vectors.** The < 10K tier has 81%
+   on Large+ instances — those organizations aren't sizing for vectors, they're running a
+   larger application that happens to include vector search. At 1M–10M rows, only 29% are
+   on Large+.
+
+3. **Many 1M+ vector workloads run on Micro/Small.** At the 1M–10M tier, 31% are still on
+   Micro and 29% on Small. This works because most don't need 1,000 QPS or 50ms P99 —
+   they're doing 10–100 queries/second with relaxed latency budgets.
+
+### When to Use This Guide's Full Sizing Pipeline
+
+Use the full 15-stage sizing pipeline when you have:
+- **Defined SLA targets** (QPS, P99 latency, recall percentage)
+- **Production traffic** that will sustain load over time
+- **Dedicated vector search** as a core product feature, not a side feature
+
+### When a Smaller Instance Is Fine
+
+For most applications, pgvector on a smaller Supabase tier works well:
+
+| Scenario | Typical tier | Why it works |
+|---|---|---|
+| RAG chatbot, < 100K docs | Micro–Small | Index fits in RAM, QPS is low (user-driven) |
+| Product search, < 1M items | Small–Large | Moderate index, moderate QPS |
+| Semantic search feature | Medium–XL | Vectors alongside relational data |
+| Development / prototyping | Micro | Any size dataset at low QPS |
+
+The key rule still applies: **if the HNSW index fits in shared_buffers and your QPS is
+modest (< 100), almost any tier works.** The sizer's higher-tier recommendations are driven
+by sustained QPS targets that most applications don't need.
+
+---
+
 ## Stage 15: Quick Reference — Sizing Cheat Sheet
 
 ### Sizing Table
