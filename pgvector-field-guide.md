@@ -698,16 +698,27 @@ Per-query time depends on ef_search and the cost of each distance computation
 | 800 | 115 ms (6.5x) | 646 ms (19.2x) |
 
 **Key observations:**
-- The relationship between ef_search and latency is **superlinear**, not linear — especially for high-dimensional vectors. Doubling ef_search from 200→400 increases latency 4x for 3072d.
 - Higher dimensions amplify the ef_search cost: 960d scales ~6.5x at ef=800 while 3072d scales ~19x.
-- For compute sizing estimates, use the measured values above rather than a linear formula. Interpolate for other dimension/ef combinations.
+- The cost is driven primarily by **bytes per vector in the index**, not just dimension count. A 1536d halfvec (3,072 bytes) is comparable to a 768d vector (3,072 bytes).
+- For compute sizing, use the measured values above when possible. For other dimensions, interpolate by index bytes per vector.
 
-**Rough estimation formula** (conservative, for dimensions and ef_search not in the table):
+**Estimation formula** (for dimensions and ef_search not in the table):
+
+The sizer uses base costs at ef_search=40 interpolated by index bytes per vector:
+
+| Dimension range | halfvec (2 bytes/dim) | vector (4 bytes/dim) |
+|---|---|---|
+| < 512 | ~3 ms | ~5 ms |
+| 512–1024 | ~8 ms | ~18 ms (measured: gist-960) |
+| 1024–2048 | ~12 ms | ~28 ms |
+| 2048–4096 | ~34 ms (measured: dbpedia) | ~45 ms |
+
+Then adjust for ef_search using a dimension-dependent exponent:
 
 ```mermaid
 flowchart LR
-    EF["your ef_search"] --> Div["ef_ratio =\nyour_ef_search / 40"] --> Pow["ef_adjustment =\nef_ratio ^ 1.3\n(superlinear)"] --> Mul["per_query_ms =\nbase_ms * ef_adjustment"]
-    TV["base_ms at ef=40\n(18ms for 960d vector,\n34ms for 3072d halfvec)"] --> Mul
+    EF["your ef_search"] --> Div["ef_ratio =\nyour_ef_search / 40"] --> Pow["ef_adjustment =\nef_ratio ^ exponent\n(0.5 for ≤ 2000d,\n0.8 for > 2000d)"] --> Mul["per_query_ms =\nbase_ms × ef_adjustment"]
+    TV["base_ms\n(from table above)"] --> Mul
 
     style EF fill:#1e3a5f,stroke:#3b82f6,color:#93c5fd
     style TV fill:#1e3a5f,stroke:#3b82f6,color:#93c5fd
@@ -716,7 +727,14 @@ flowchart LR
     style Mul fill:#14532d,stroke:#22c55e,color:#86efac
 ```
 
-> **Use the measured table above for production sizing.** The formula is a fallback for dimensions/ef values not covered by the measurements.
+Then compute headroom:
+
+| Write pattern | Headroom |
+|---|---|
+| Streaming (concurrent reads + writes) | 40% of query cores |
+| Batch / static | 20% of query cores |
+
+Add 2 vCPUs for PostgreSQL background processes (autovacuum, WAL writer, checkpointer).
 
 > **pgvector quantization and rescoring:** For `halfvec` and direct `vector` indexes,
 > the distance computation uses the stored vector directly — no separate rescoring step.
@@ -733,8 +751,8 @@ Add headroom for PostgreSQL background processes:
 
 ```mermaid
 flowchart TD
-    Q{"Write pattern?"} -->|"STREAMING\n(concurrent reads + writes)"| Stream["headroom = 50%\n\nWrites trigger WAL flushes,\nautovacuum, and potential\nindex maintenance."]
-    Q -->|"BATCH / STATIC"| Batch["headroom = 30%\n\nMinimal write overhead\nduring query serving."]
+    Q{"Write pattern?"} -->|"STREAMING\n(concurrent reads + writes)"| Stream["headroom = 40%\n\nWrites trigger WAL flushes,\nautovacuum, and potential\nindex maintenance."]
+    Q -->|"BATCH / STATIC"| Batch["headroom = 20%\n\nMinimal write overhead\nduring query serving."]
 
     style Q fill:#18181b,stroke:#3f3f46,color:#e4e4e7
     style Stream fill:#422006,stroke:#f59e0b,color:#fde68a
