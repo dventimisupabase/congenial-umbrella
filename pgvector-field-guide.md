@@ -127,6 +127,15 @@ COMMIT;
 | 96-98% (MODERATE) | 4x | 100 |
 | > 98% (STRICT) | 8x | 200 |
 
+**Important: these formulas underestimate at scale.** At 1M vectors, empirical testing shows:
+
+| Dataset | top_k | Formula result | Actual ef_search needed | Recall achieved |
+|---|---|---|---|---|
+| gist-960 (99% target) | 10 | max(80, 200) = 200 | **400** | 99.6% |
+| dbpedia (95% target) | 100 | max(200, 40) = 200 | 200 | 98.3% |
+
+The formula works well for RELAXED targets but consistently underestimates for STRICT (>98%) recall at 1M+ vectors. **Always validate ef_search empirically** against your recall target at production scale. Higher ef_search increases latency proportionally (~3x ef_search ≈ 3x query time) but recall improvements are nonlinear — the last few percentage points are expensive.
+
 ### Index Build Optimization
 
 Speed up HNSW builds with parallel workers:
@@ -227,19 +236,47 @@ SELECT * FROM items ORDER BY embedding::halfvec(1536) <=> $1::halfvec(1536) LIMI
 
 ## Step 6: PostgreSQL Memory Configuration
 
-pgvector performance is heavily influenced by PostgreSQL memory settings. Vectors and indexes must fit in memory for best performance.
+pgvector performance is heavily influenced by PostgreSQL memory settings. The HNSW index **must** fit in shared_buffers for acceptable query performance. This is the single most important configuration decision.
 
 ### shared_buffers
 
-PostgreSQL's main buffer pool. Should hold the index + hot table data.
+PostgreSQL's main buffer pool. For vector workloads, this must hold the entire HNSW index.
 
-**Rule of thumb**: 25% of total RAM, but ensure it can hold your HNSW/IVFFlat index.
+**Rule for pgvector**: `shared_buffers >= index_size + (table_size × 0.1)`, bounded by 60-70% of total RAM.
+
+The standard PostgreSQL guidance of 25% of RAM is **wrong for vector workloads**. When the HNSW index doesn't fit in shared_buffers, every query hits disk and latency increases 40-60x:
+
+| Cache state | shared_buffers reads | Query latency (1M vectors) |
+|---|---|---|
+| **Warm** (index in shared_buffers) | `shared hit=4839, read=0` | **21 ms** |
+| **Cold** (index on disk) | `shared hit=3261, read=1578` | **834 ms** |
 
 ```sql
+-- Check current setting
 SHOW shared_buffers;
--- Set in postgresql.conf:
--- shared_buffers = '8GB'
+
+-- On Supabase, set via CLI (requires restart):
+-- supabase postgres-config update --config shared_buffers=20GB
+
+-- Verify index fits in buffers with EXPLAIN (ANALYZE, BUFFERS):
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT id FROM items ORDER BY embedding <-> $1 LIMIT 10;
+-- Look for "shared read=0" — any reads mean cache misses
 ```
+
+### Cache Warming with pg_prewarm
+
+After any database restart, the HNSW index is cold (on disk). Use `pg_prewarm` to pull it into shared_buffers before serving traffic:
+
+```sql
+-- Warm the HNSW index into shared_buffers
+SELECT pg_prewarm('items_embedding_idx');
+
+-- Verify it's in cache
+SELECT pg_size_pretty(pg_relation_size('items_embedding_idx')) AS index_size;
+```
+
+**This is essential for production deployments.** Without pre-warming, the first queries after a restart will see 40-60x higher latency until the index is naturally cached by query activity.
 
 ### effective_cache_size
 
@@ -492,3 +529,63 @@ Iterative scan re-scans the index with increasing search scope until enough matc
 | 10M | 1536 | halfvec | ~31 GB | ~45 GB | 128 GB |
 
 *Sizes are approximate. Actual sizes depend on TOAST settings, fill factor, and index parameters.*
+
+---
+
+## Real-World Benchmark Results
+
+Measured on Supabase Cloud with 1,000,000 vectors per scenario. All latencies include network round-trip from client to us-east-1.
+
+### Test Scenarios
+
+| | Scenario 1: dbpedia | Scenario 2: gist-960 |
+|---|---|---|
+| Vectors | 1,000,000 | 1,000,000 |
+| Dimensions | 3072 | 960 |
+| Distance | Cosine | L2 (Euclidean) |
+| Vector type | halfvec (expression index) | vector (float32) |
+| HNSW m | 16 | 24 |
+| ef_construction | 128 | 256 |
+| ef_search | 200 | 400 |
+| Recall target | 95% @100 | 99% @10 |
+| **Actual index size** | **7.8 GB** | **7.7 GB** |
+
+### Results by Compute Tier
+
+| Tier | RAM | shared_buffers | Scenario | Recall | P50 (server) | Status |
+|---|---|---|---|---|---|---|
+| Large (2v/8GB) | 8 GB | 2 GB | dbpedia | Index build failed after 2h | — | FAIL |
+| 2XL (8v/32GB) | 32 GB | 8 GB | dbpedia | 100% | 5,920 ms (cold) | Latency FAIL |
+| 2XL (8v/32GB) | 32 GB | 8 GB | gist-960 | 96.2% | 100 ms | Recall FAIL |
+| **4XL (16v/64GB)** | **64 GB** | **20 GB** | **dbpedia** | **98.3%** | **26 ms (warm)** | **PASS** |
+| **4XL (16v/64GB)** | **64 GB** | **20 GB** | **gist-960** | **99.6%** | **~200 ms (warm)** | **PASS** |
+
+### Key Findings
+
+1. **Index must fit in shared_buffers.** Cold cache (index on disk) is 40-60x slower than warm cache (index in shared_buffers). At 1M vectors, both indexes are ~7.7 GB — they require at least 8 GB of shared_buffers each.
+
+2. **The standard 25% shared_buffers rule is wrong for vector workloads.** Set `shared_buffers >= index_size`. On the 4XL (64 GB RAM), we set shared_buffers to 20 GB (31%) to comfortably hold both indexes.
+
+3. **ef_search formulas underestimate at scale.** For 99% recall on gist-960, the formula gives ef_search=200 but the empirical requirement is ef_search=400. Always validate at production scale.
+
+4. **Higher ef_search trades latency for recall linearly.** 3x ef_search ≈ 3x latency, but recall improvements are nonlinear — the last few percentage points are expensive.
+
+5. **Use pg_prewarm after restarts.** Without it, the first queries see 40-60x higher latency until the index naturally warms into shared_buffers.
+
+6. **HNSW builds need adequate compute.** The Large tier (2 vCPU, 8 GB) couldn't complete a 1M × 3072d index build. The 4XL with 4 parallel workers built it in ~50 minutes.
+
+### Ingest Performance
+
+| Dataset | Dimensions | Method | Rate | Notes |
+|---|---|---|---|---|
+| dbpedia | 3072 | COPY | 525 vec/s | STORAGE EXTERNAL (row > 8KB) |
+| gist-960 | 960 | COPY | 2,233 vec/s | STORAGE PLAIN |
+
+*COPY is 4-5x faster than INSERT for vector ingestion.*
+
+### Index Build Time (4XL, 4 parallel workers)
+
+| Dataset | Dimensions | m | ef_construction | Build Time |
+|---|---|---|---|---|
+| dbpedia | 3072 (halfvec) | 16 | 128 | ~50 min |
+| gist-960 | 960 | 24 | 256 | ~35 min |
