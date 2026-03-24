@@ -58,12 +58,15 @@ export const HALFVEC_MATRIX = {
 };
 
 // CPU base ms per query at ef_search=40, warm cache, 1M vectors on Supabase 4XL.
-// Measured via EXPLAIN ANALYZE. Interpolated for untested dimension ranges.
+// Measured via EXPLAIN ANALYZE. Cost is driven by bytes-per-vector in the index:
+//   gist-960 (960d × 4 = 3840 bytes/vec): 18ms
+//   dbpedia  (3072d × 2 = 6144 bytes/vec): 34ms
+// Interpolated by index bytes, not just dimensions.
 export const CPU_BASE_MS = {
-  '<512-halfvec': 4,       '<512-vector': 6,
-  '512-1024-halfvec': 10,  '512-1024-vector': 18,    // gist-960 measured: 18ms
-  '1024-2048-halfvec': 18, '1024-2048-vector': 25,
-  '2048-4096-halfvec': 34, '2048-4096-vector': 45,   // dbpedia measured: 34ms (halfvec)
+  '<512-halfvec': 3,       '<512-vector': 5,
+  '512-1024-halfvec': 8,   '512-1024-vector': 18,    // gist-960 measured: 18ms (3840 bytes)
+  '1024-2048-halfvec': 12, '1024-2048-vector': 28,   // 1536d halfvec = 3072 bytes ≈ gist-960
+  '2048-4096-halfvec': 34, '2048-4096-vector': 45,   // dbpedia measured: 34ms (6144 bytes)
 };
 
 // Supabase compute tier catalog
@@ -306,9 +309,9 @@ export function sizeCompute(dimensions, recall, index, peakQPS, writePattern, pe
   const perQueryMs = baseMs * efAdjustment;
   const coresForQueries = peakQPS * (perQueryMs / 1000);
 
-  // Headroom
+  // Headroom: accounts for autovacuum, WAL writer, checkpoint pressure
   const streamingWrites = writePattern === 'streaming';
-  const headroomPct = streamingWrites ? 80 : 30;
+  const headroomPct = streamingWrites ? 40 : 20;
   const headroomCores = coresForQueries * (headroomPct / 100);
 
   // Write cores
