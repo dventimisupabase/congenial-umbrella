@@ -89,7 +89,7 @@ flowchart TD
 > Binary quantization is especially powerful for high-dimensional neural text embeddings
 > (Class A) where the 32x index compression dramatically reduces memory requirements.
 > The re-ranking pattern (search quantized index for top-N candidates, then re-rank by
-> original vectors for top-K) mirrors Qdrant's oversampling/rescoring approach:
+> original vectors for top-K) is a standard two-phase retrieval pattern:
 >
 > ```sql
 > -- Binary quantized index (32x smaller than float32)
@@ -436,9 +436,8 @@ CREATE INDEX CONCURRENTLY ON items
 This determines what must fit in shared_buffers for acceptable performance.
 
 In pgvector, the critical performance boundary is **whether the HNSW index fits entirely
-in shared_buffers**. Unlike Qdrant (which has mmap vs RAM placement options), PostgreSQL
-manages caching through its shared buffer pool. If the index doesn't fit, every query
-incurs disk I/O and latency degrades catastrophically.
+in shared_buffers**. PostgreSQL manages caching through its shared buffer pool. If the
+index doesn't fit, every query incurs disk I/O and latency degrades catastrophically.
 
 ```mermaid
 flowchart LR
@@ -706,8 +705,8 @@ Examples: ef_search = 40 -> 1.0x (baseline), ef_search = 100 -> 2.5x, ef_search 
 > the distance computation uses the stored vector directly — no separate rescoring step.
 > However, **binary quantization** (`binary_quantize()`) does support a two-phase
 > search pattern: coarse search on the quantized index, then re-rank candidates using
-> original full-precision vectors. This mirrors Qdrant's oversampling/rescoring approach
-> and can dramatically reduce index memory for high-dimensional embeddings.
+> original full-precision vectors. This can dramatically reduce index memory for
+> high-dimensional embeddings.
 
 ### Step 8b: Calculate Required Cores for QPS
 

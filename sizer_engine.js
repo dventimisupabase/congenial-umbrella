@@ -125,7 +125,7 @@ export function indexStrategy(regime, topK, numVectors, indexType) {
     let m = HNSW_M[regime];
     const efConstruction = HNSW_EF_CONSTRUCTION[regime];
 
-    // Top-k adjustment (from Qdrant field guide):
+    // Top-k adjustment for graph connectivity:
     // top_k >= 50: bump m up one tier (denser graph for large result sets)
     // top_k <= 20: drop m down one tier (minimum m=16)
     if (topK >= 50 && m < 32) m = Math.min(m + 4, 32);

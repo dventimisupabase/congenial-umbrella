@@ -2,7 +2,7 @@
 """
 pgvector Benchmark Pipeline — Ingests datasets and measures recall/latency.
 
-Adapted from qdrant_benchmark.py for PostgreSQL + pgvector on Supabase.
+Benchmark pipeline for PostgreSQL + pgvector on Supabase.
 
 Usage:
     # Smoke test (10K vectors, local Supabase)
@@ -399,7 +399,7 @@ def _index_exists(conn, config):
 
 def _sample_query_vectors(conn, config, num_queries):
     """Sample query vectors directly from the database.
-    Mirrors the Qdrant approach of client.retrieve(with_vectors=True)."""
+    Samples directly from the database to avoid loading the full dataset."""
     table = config.table_name
     print(f"  Sampling {num_queries} query vectors from {table}...", flush=True)
 
