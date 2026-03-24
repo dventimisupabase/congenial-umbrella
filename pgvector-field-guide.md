@@ -1267,6 +1267,96 @@ server-side (measured via `EXPLAIN ANALYZE`, excluding network round-trip).
 7. **COPY is 4-5x faster than INSERT.** 525 vec/s for 3072d, 2,233 vec/s for 960d.
    Always use COPY for bulk loads.
 
+8. **Multiple vector indexes can confuse the planner.** When both HNSW and IVFFlat
+   indexes exist on the same column, PostgreSQL may choose the wrong one. Drop
+   unused vector indexes or use explicit index hints.
+
+### Recall vs ef_search Curves (1M vectors, HNSW, warm cache)
+
+**gist-960** (960d, L2, m=24, ef_construction=256, top-10):
+
+| ef_search | Recall@10 | P50 (client) | Status |
+|---|---|---|---|
+| 20 | 75.6% | 87 ms | FAIL |
+| 40 | 85.6% | 87 ms | FAIL |
+| 60 | 90.1% | 88 ms | FAIL |
+| 80 | 92.7% | 89 ms | FAIL |
+| 100 | 95.2% | 91 ms | FAIL (for 99% target) |
+| 128 | 96.2% | 92 ms | FAIL |
+| 160 | 97.4% | 94 ms | FAIL |
+| 200 | 98.5% | 96 ms | FAIL |
+| 256 | 98.7% | 99 ms | FAIL |
+| **300** | **99.1%** | **100 ms** | **PASS** (first to exceed 99%) |
+| 400 | 99.6% | 105 ms | PASS |
+| 500 | 99.8% | 182 ms | PASS |
+
+The 99% recall threshold requires ef_search >= 300 on this dataset at 1M scale. The formula
+(`8 * top_k = 80`, floor 200) significantly underestimates.
+
+**dbpedia** (3072d, cosine, halfvec index, m=16, ef_construction=128, top-100):
+
+| ef_search | Recall@100 | P50 (client) | Status |
+|---|---|---|---|
+| 40 | 40.0% | 217 ms | FAIL |
+| 80 | 80.0% | 132 ms | FAIL |
+| 128 | 98.2% | 127 ms | PASS |
+| 200 | 98.7% | 130 ms | PASS |
+| 300 | 99.0% | 139 ms | PASS |
+| 400 | 99.1% | 140 ms | PASS |
+| 600 | 99.2% | 153 ms | PASS |
+| 800 | 99.4% | 160 ms | PASS |
+
+For the 95% recall target, ef_search=128 is sufficient. The formula (`2 * 100 = 200`) is
+slightly conservative but reasonable — ef_search=128 already exceeds the target by 3 points.
+
+### HNSW vs IVFFlat Comparison (gist-960, 1M vectors, warm cache)
+
+| Metric | HNSW (m=24, ef_c=256) | IVFFlat (lists=1000) |
+|---|---|---|
+| **Index size** | 7,678 MB | 3,912 MB (49% smaller) |
+| **Build time** | ~35 min (4 workers) | ~5 min |
+| **99% recall** | ef_search=300, P50=100ms | probes=80, P50=479ms |
+| **99.9% recall** | ef_search=500, P50=182ms | probes=150, P50=744ms |
+| **Index build memory** | maintenance_work_mem=4GB | maintenance_work_mem=4GB |
+
+**IVFFlat recall vs probes** (1M vectors, lists=1000, top-10):
+
+| probes | Recall@10 | P50 (client) | Status |
+|---|---|---|---|
+| 1 | 29.1% | 85 ms | FAIL |
+| 5 | 65.3% | 104 ms | FAIL |
+| 10 | 78.6% | 130 ms | FAIL |
+| 20 | 88.9% | 176 ms | FAIL |
+| 32 | 94.7% | 244 ms | FAIL |
+| 50 | 97.8% | 345 ms | FAIL |
+| **80** | **99.6%** | **479 ms** | **PASS** |
+| 100 | 99.8% | 552 ms | PASS |
+| 150 | 99.9% | 744 ms | PASS |
+| 200 | 100.0% | 934 ms | PASS |
+
+**Verdict:** HNSW is faster at every recall level. At 99% recall, HNSW is **4.8x faster**
+(100ms vs 479ms). IVFFlat's advantage is build time (7x faster) and index size (49% smaller).
+Use IVFFlat only when build time or memory is the hard constraint.
+
+### Binary Quantization Results (dbpedia, 1M vectors)
+
+| Index | Size | Compression |
+|---|---|---|
+| HNSW halfvec | 7,813 MB | 2x (vs float32) |
+| HNSW binary quantized | 662 MB | **12x** (vs halfvec HNSW) |
+
+Binary quantization achieves **12x index compression** compared to halfvec HNSW.
+
+However, recall with the re-ranking pattern was only **39.5%** regardless of oversampling
+factor (tested 1x–20x). This suggests that the binary quantized HNSW graph itself has
+poor connectivity for cosine similarity on these embeddings — increasing oversampling
+doesn't help because the coarse BQ search doesn't find the right candidates to re-rank.
+
+**Binary quantization may require different HNSW parameters** (higher m, higher ef_construction)
+to compensate for the precision loss in the graph. This is an area for further investigation.
+For now, **halfvec expression indexing remains the recommended approach** for high-dimensional
+vectors where binary quantization hasn't been specifically validated.
+
 8. **3072d vectors require special handling.** Must use halfvec expression index
    (HNSW 2000d limit), must use STORAGE EXTERNAL (exceeds 8 KB page), and the index
    build is significantly slower than lower-dimensional vectors.

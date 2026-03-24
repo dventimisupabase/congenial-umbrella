@@ -1,0 +1,178 @@
+[
+  {
+    "dataset": "gist-960",
+    "ef_search": 20,
+    "recall_mean": 0.7555,
+    "recall_min": 0.1,
+    "p50_ms": 86.9,
+    "p99_ms": 114.3
+  },
+  {
+    "dataset": "gist-960",
+    "ef_search": 40,
+    "recall_mean": 0.856,
+    "recall_min": 0.3,
+    "p50_ms": 87.1,
+    "p99_ms": 92.8
+  },
+  {
+    "dataset": "gist-960",
+    "ef_search": 60,
+    "recall_mean": 0.901,
+    "recall_min": 0.4,
+    "p50_ms": 87.9,
+    "p99_ms": 98.6
+  },
+  {
+    "dataset": "gist-960",
+    "ef_search": 80,
+    "recall_mean": 0.927,
+    "recall_min": 0.4,
+    "p50_ms": 88.9,
+    "p99_ms": 96.2
+  },
+  {
+    "dataset": "gist-960",
+    "ef_search": 100,
+    "recall_mean": 0.9515,
+    "recall_min": 0.6,
+    "p50_ms": 91.0,
+    "p99_ms": 96.1
+  },
+  {
+    "dataset": "gist-960",
+    "ef_search": 128,
+    "recall_mean": 0.962,
+    "recall_min": 0.6,
+    "p50_ms": 92.1,
+    "p99_ms": 97.1
+  },
+  {
+    "dataset": "gist-960",
+    "ef_search": 160,
+    "recall_mean": 0.974,
+    "recall_min": 0.6,
+    "p50_ms": 93.9,
+    "p99_ms": 99.4
+  },
+  {
+    "dataset": "gist-960",
+    "ef_search": 200,
+    "recall_mean": 0.9845,
+    "recall_min": 0.8,
+    "p50_ms": 96.0,
+    "p99_ms": 104.8
+  },
+  {
+    "dataset": "gist-960",
+    "ef_search": 256,
+    "recall_mean": 0.987,
+    "recall_min": 0.8,
+    "p50_ms": 98.5,
+    "p99_ms": 166.3
+  },
+  {
+    "dataset": "gist-960",
+    "ef_search": 300,
+    "recall_mean": 0.991,
+    "recall_min": 0.8,
+    "p50_ms": 99.8,
+    "p99_ms": 106.1
+  },
+  {
+    "dataset": "gist-960",
+    "ef_search": 400,
+    "recall_mean": 0.9955,
+    "recall_min": 0.8,
+    "p50_ms": 104.9,
+    "p99_ms": 199.8
+  },
+  {
+    "dataset": "gist-960",
+    "ef_search": 500,
+    "recall_mean": 0.9975,
+    "recall_min": 0.9,
+    "p50_ms": 182.3,
+    "p99_ms": 572.2
+  },
+  {
+    "dataset": "gist-960",
+    "ef_search": 600,
+    "recall_mean": 0.464,
+    "recall_min": 0.0,
+    "p50_ms": 88.9,
+    "p99_ms": 339.1
+  },
+  {
+    "dataset": "gist-960",
+    "ef_search": 800,
+    "recall_mean": 0.2905,
+    "recall_min": 0.0,
+    "p50_ms": 87.2,
+    "p99_ms": 98.1
+  },
+  {
+    "dataset": "dbpedia",
+    "ef_search": 40,
+    "recall_mean": 0.4,
+    "recall_min": 0.4,
+    "p50_ms": 216.6,
+    "p99_ms": 714.5
+  },
+  {
+    "dataset": "dbpedia",
+    "ef_search": 80,
+    "recall_mean": 0.8,
+    "recall_min": 0.8,
+    "p50_ms": 132.4,
+    "p99_ms": 408.1
+  },
+  {
+    "dataset": "dbpedia",
+    "ef_search": 128,
+    "recall_mean": 0.9816,
+    "recall_min": 0.9,
+    "p50_ms": 126.8,
+    "p99_ms": 446.8
+  },
+  {
+    "dataset": "dbpedia",
+    "ef_search": 200,
+    "recall_mean": 0.9872,
+    "recall_min": 0.92,
+    "p50_ms": 129.8,
+    "p99_ms": 415.6
+  },
+  {
+    "dataset": "dbpedia",
+    "ef_search": 300,
+    "recall_mean": 0.9896,
+    "recall_min": 0.92,
+    "p50_ms": 139.3,
+    "p99_ms": 420.3
+  },
+  {
+    "dataset": "dbpedia",
+    "ef_search": 400,
+    "recall_mean": 0.991,
+    "recall_min": 0.92,
+    "p50_ms": 140.2,
+    "p99_ms": 469.3
+  },
+  {
+    "dataset": "dbpedia",
+    "ef_search": 600,
+    "recall_mean": 0.9922,
+    "recall_min": 0.92,
+    "p50_ms": 153.1,
+    "p99_ms": 375.8
+  },
+  {
+    "dataset": "dbpedia",
+    "ef_search": 800,
+    "recall_mean": 0.9936,
+    "recall_min": 0.92,
+    "p50_ms": 159.5,
+    "p99_ms": 418.2
+  }
+]
