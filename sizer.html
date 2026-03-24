@@ -745,7 +745,7 @@ function renderResults(r) {
   `;
 
   // Format pgConfig
-  const pgConfigRows = Object.entries(r.pgConfig).map(([k, v]) =>
+  const pgConfigRows = Object.entries(r.pgConfig).filter(([k]) => k !== 'configurableOnSupabase').map(([k, v]) =>
     `<div class="result-row"><span class="result-key">${k}</span><span class="result-val">${v}</span></div>`
   ).join('');
 
@@ -853,7 +853,7 @@ function copyResults() {
     `vCPUs: ${r.compute.totalVcpus} (${r.compute.perQueryMs}ms/query, ${r.compute.headroomPct}% headroom)`,
     ``,
     `PostgreSQL Config:`,
-    ...Object.entries(r.pgConfig).map(([k, v]) => `  ${k} = ${v}`),
+    ...Object.entries(r.pgConfig).filter(([k]) => k !== 'configurableOnSupabase').map(([k, v]) => `  ${k} = ${v}`),
     ``,
     `Compute Tier: ${r.instance.tierName} (${r.instance.tierVcpus} vCPU, ${r.instance.tierRamGB} GB) [${r.instance.dedicated ? 'Dedicated' : 'Shared'} CPU]`,
     r.instance.overprovisionNote ? `Note: ${r.instance.overprovisionNote}` : null,

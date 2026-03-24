@@ -79,7 +79,7 @@ export const INSTANCES = [
   { name: '16XL',   vcpus: 64, ram: 256, hourly: 4.38360, platform: 'Supabase', dedicated: true },
 ];
 
-export const RAM_TIERS = [8, 16, 32, 64, 128, 256, 512];
+export const RAM_TIERS = [1, 2, 4, 8, 16, 32, 64, 128, 192, 256];
 
 // ---------------------------------------------------------------------------
 // Stage 1: Classify Embeddings
@@ -122,14 +122,30 @@ export function recallRegime(recallTarget, embeddingClass) {
 
 export function indexStrategy(regime, topK, numVectors, indexType) {
   if (indexType === 'hnsw') {
-    const m = HNSW_M[regime];
+    let m = HNSW_M[regime];
     const efConstruction = HNSW_EF_CONSTRUCTION[regime];
+
+    // Top-k adjustment (from Qdrant field guide):
+    // top_k >= 50: bump m up one tier (denser graph for large result sets)
+    // top_k <= 20: drop m down one tier (minimum m=16)
+    if (topK >= 50 && m < 32) m = Math.min(m + 4, 32);
+    else if (topK <= 20 && m > 16) m = Math.max(m - 4, 16);
+
     const efSearchCalc = HNSW_EF_SEARCH_MULTIPLIER[regime] * topK;
     const efSearchFloor = HNSW_EF_SEARCH_FLOOR[regime];
-    const efSearch = Math.max(efSearchCalc, efSearchFloor);
-    const efNote = efSearch > efSearchCalc
+    let efSearch = Math.max(efSearchCalc, efSearchFloor);
+    let efNote = efSearch > efSearchCalc
       ? `floor-adjusted from ${efSearchCalc} to ${efSearch}`
       : `${HNSW_EF_SEARCH_MULTIPLIER[regime]}x top_k`;
+
+    // Scale adjustment: ef_search formulas underestimate at 1M+ vectors.
+    // Empirically, gist-960 at 1M needed ef_search=400 (not 200) for 99% recall.
+    if (regime === 'STRICT' && numVectors >= 1_000_000) {
+      efSearch = Math.max(efSearch, 400);
+      if (efSearch === 400) {
+        efNote = `scale-adjusted to ${efSearch} for ${(numVectors / 1_000_000).toFixed(0)}M+ vectors`;
+      }
+    }
 
     return { indexType: 'hnsw', m, efConstruction, efSearch, efNote };
   }
@@ -168,9 +184,9 @@ export function sizeMemory(numVectors, dimensions, recall, index) {
     indexMB = tableMB * 1.1 + listOverhead; // vectors re-stored in index + centroids
   }
 
-  // shared_buffers: ideally holds the full index + hot table data
-  // Rule of thumb: 25% of total RAM, but must fit index
-  const idealSharedBuffersMB = indexMB + tableMB * 0.3; // index + 30% of table for hot rows
+  // shared_buffers: MUST hold the full index + hot table data
+  // Empirically: 40-60x latency penalty if index doesn't fit in shared_buffers
+  const idealSharedBuffersMB = indexMB + tableMB * 0.1; // index + 10% of table for hot rows
 
   // effective_cache_size: total memory Postgres can use (incl. OS page cache)
   // Should be ~75% of total RAM
@@ -184,19 +200,21 @@ export function sizeMemory(numVectors, dimensions, recall, index) {
     maintenanceWorkMemMB = Math.max(tableMB * 0.5, 512); // IVFFlat is lighter
   }
 
-  // Total RAM needed
+  // Total RAM needed: shared_buffers MUST hold the full HNSW index
   const pgOverheadMB = 512; // Postgres process overhead, WAL buffers, etc.
   const osReserveMB = 1024; // OS + filesystem cache breathing room
-  const totalRequiredMB = idealEffectiveCacheMB + pgOverheadMB + osReserveMB;
+  const sharedBuffersNeededMB = idealSharedBuffersMB;
+  const totalRequiredMB = sharedBuffersNeededMB + pgOverheadMB + osReserveMB;
 
-  // Round up to nearest RAM tier
+  // Round up to nearest RAM tier (must fit shared_buffers + overhead)
   let roundedGB = RAM_TIERS[RAM_TIERS.length - 1];
   for (const tier of RAM_TIERS) {
     if (tier * 1024 >= totalRequiredMB) { roundedGB = tier; break; }
   }
 
-  // Postgres config recommendations
-  const sharedBuffersGB = Math.max(Math.round(roundedGB * 0.25), 1);
+  // shared_buffers MUST hold the full HNSW index (empirically: 40-60x latency if it doesn't)
+  const sharedBuffersMB = idealSharedBuffersMB; // index + 10% table for hot rows
+  const sharedBuffersGB = Math.max(Math.ceil(sharedBuffersMB / 1024), 1);
   const effectiveCacheSizeGB = Math.max(Math.round(roundedGB * 0.75), 2);
 
   return {
@@ -360,11 +378,20 @@ export function postgresConfig(memory, index, compute, writePattern) {
     config['ivfflat.probes'] = index.probes;
   }
 
-  // WAL tuning for write-heavy workloads
-  if (writePattern === 'streaming') {
-    config.wal_buffers = '64MB';
-    config.checkpoint_completion_target = 0.9;
-  }
+  // Note: wal_buffers and checkpoint_completion_target are NOT configurable on Supabase,
+  // so we omit them from the config output.
+
+  // Supabase configurability notes
+  config.configurableOnSupabase = {
+    shared_buffers: 'Via CLI (requires restart)',
+    effective_cache_size: 'Via SQL (no restart)',
+    maintenance_work_mem: 'Via SQL (no restart)',
+    work_mem: 'Via SQL (no restart)',
+    max_parallel_workers_per_gather: 'Via SQL (no restart)',
+    max_parallel_maintenance_workers: 'Via SQL (no restart)',
+    'hnsw.ef_search': 'Session-level SET (always works)',
+    'ivfflat.probes': 'Session-level SET (always works)',
+  };
 
   return config;
 }
@@ -401,6 +428,8 @@ export function suggestOptimizations(classification, recall, index, dimensions, 
 
   opts.push('PLAIN storage: ALTER TABLE ... ALTER COLUMN embedding SET STORAGE PLAIN to avoid TOAST overhead for vectors.');
 
+  opts.push('pg_prewarm: After any restart, warm the HNSW index into shared_buffers before serving traffic: SELECT pg_prewarm(\'your_index_name\');');
+
   return opts;
 }
 
@@ -416,6 +445,10 @@ export function generateSQL(datasetName, dimensions, classification, recall, ind
     : classification.pgOps;
   const distOp = classification.metric === 'Cosine' ? '<=>' : classification.metric === 'L2 (Euclidean)' ? '<->' : '<#>';
 
+  // Determine storage mode: rows exceeding 8KB page need EXTERNAL, not PLAIN
+  const rowBytes = dimensions * BYTES_PER_DIM[recall.useHalfvec ? 'halfvec' : 'vector'] + 8 + TUPLE_OVERHEAD_BYTES;
+  const storageMode = rowBytes > 8160 ? 'EXTERNAL' : 'PLAIN';
+
   const lines = [];
   lines.push(`-- Table`);
   lines.push(`CREATE TABLE ${tableName} (`);
@@ -425,11 +458,14 @@ export function generateSQL(datasetName, dimensions, classification, recall, ind
   lines.push(`);`);
   lines.push(``);
   lines.push(`-- Optimize storage (avoid TOAST overhead)`);
-  lines.push(`ALTER TABLE ${tableName} ALTER COLUMN embedding SET STORAGE PLAIN;`);
+  lines.push(`ALTER TABLE ${tableName} ALTER COLUMN embedding SET STORAGE ${storageMode};`);
   lines.push(``);
 
   if (index.indexType === 'hnsw') {
-    const colExpr = recall.useHalfvec ? `embedding` : `embedding`;
+    // For halfvec with >2000 dimensions, use expression index with cast
+    const colExpr = recall.useHalfvec && dimensions > 2000
+      ? `(embedding::halfvec(${dimensions}))`
+      : `embedding`;
     lines.push(`-- HNSW index`);
     lines.push(`CREATE INDEX ON ${tableName} USING hnsw (${colExpr} ${opsClass}) WITH (m = ${index.m}, ef_construction = ${index.efConstruction});`);
     lines.push(``);
@@ -549,6 +585,7 @@ export function formatSummary(r) {
   a('  PostgreSQL Configuration');
   a('  ' + '-'.repeat(30));
   for (const [k, v] of Object.entries(r.pgConfig)) {
+    if (k === 'configurableOnSupabase') continue;
     a(`  ${k} = ${v}`);
   }
   a('');
