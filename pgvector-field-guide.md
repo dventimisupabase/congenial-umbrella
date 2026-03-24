@@ -1415,36 +1415,52 @@ different picture:
 
 ### What This Tells Us
 
-1. **Most vector workloads are small.** 93% of organizations with vectors have fewer than
-   1M rows. The median database size at 100K–1M rows is just 2.1 GB — comfortably fits
-   on a Micro.
+1. **Most real vector QPS targets are modest.** 93% of organizations with vectors have
+   fewer than 1M rows. At the 1M–10M tier, 60% run on Micro or Small — which means
+   they're not sustaining 1,000 QPS. Most production vector search is user-driven
+   (10–100 QPS) with relaxed latency budgets, not high-throughput machine-to-machine.
 
-2. **Instance size is often driven by the application, not vectors.** The < 10K tier has 81%
-   on Large+ instances — those organizations aren't sizing for vectors, they're running a
-   larger application that happens to include vector search. At 1M–10M rows, only 29% are
-   on Large+.
+2. **Vectors are usually part of a mixed workload.** This is the core pgvector value
+   proposition: vectors live alongside relational data in the same database, the same
+   transaction, the same query. The < 10K vector tier has 81% on Large+ instances —
+   those organizations aren't sizing for vectors, they're running a relational
+   application that includes vector search as one feature among many.
 
-3. **Many 1M+ vector workloads run on Micro/Small.** At the 1M–10M tier, 31% are still on
-   Micro and 29% on Small. This works because most don't need 1,000 QPS or 50ms P99 —
-   they're doing 10–100 queries/second with relaxed latency budgets.
+   At the lower end of the scale, the instance size is driven by the **overall
+   application** — authentication, row-level security, relational queries, realtime
+   subscriptions — not by vector search. The vector workload is a passenger, not the
+   driver. As you climb the scale ladder (10M+ rows), vector search increasingly
+   dominates the resource budget, and this guide's sizing pipeline becomes essential.
+
+3. **The shared_buffers constraint is the real sizing boundary.** Even in a mixed
+   workload, the rule holds: if the HNSW index doesn't fit in shared_buffers, vector
+   query latency collapses. For mixed workloads, budget shared_buffers for both the
+   HNSW index AND your relational hot data — not just one or the other.
 
 ### When to Use This Guide's Full Sizing Pipeline
 
-Use the full 15-stage sizing pipeline when you have:
-- **Defined SLA targets** (QPS, P99 latency, recall percentage)
-- **Production traffic** that will sustain load over time
-- **Dedicated vector search** as a core product feature, not a side feature
+Use the full 15-stage sizing pipeline when:
+- **Vector search is the dominant workload** or has specific SLA targets
+- **You're at 1M+ vectors** where the HNSW index may not fit in default shared_buffers
+- **You need sustained QPS** (hundreds or thousands of queries/second)
+- **Recall and latency are contractual** (not just "good enough")
 
 ### When a Smaller Instance Is Fine
 
-For most applications, pgvector on a smaller Supabase tier works well:
+For mixed workloads and modest vector usage, pgvector on a smaller Supabase tier works
+well — especially since you're already sizing the instance for your relational workload:
 
 | Scenario | Typical tier | Why it works |
 |---|---|---|
-| RAG chatbot, < 100K docs | Micro–Small | Index fits in RAM, QPS is low (user-driven) |
-| Product search, < 1M items | Small–Large | Moderate index, moderate QPS |
-| Semantic search feature | Medium–XL | Vectors alongside relational data |
+| RAG chatbot, < 100K docs | Micro–Small | Index fits in RAM, QPS is user-driven (low) |
+| Product search, < 1M items | Small–Large | Moderate index alongside relational data |
+| Semantic search in a SaaS app | Medium–XL | Vectors are one feature, not the whole product |
 | Development / prototyping | Micro | Any size dataset at low QPS |
+
+For mixed workloads, the sizing question is simpler: **does your HNSW index fit in
+shared_buffers alongside your relational hot data?** If yes, your existing instance
+is probably fine. If no, you need to either increase shared_buffers (and possibly the
+tier) or consider halfvec / binary quantization to shrink the index.
 
 The key rule still applies: **if the HNSW index fits in shared_buffers and your QPS is
 modest (< 100), almost any tier works.** The sizer's higher-tier recommendations are driven
