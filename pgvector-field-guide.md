@@ -1468,6 +1468,104 @@ by sustained QPS targets that most applications don't need.
 
 ---
 
+## Known Limitations and Mitigations
+
+pgvector is a powerful extension, but it has real trade-offs that practitioners need to understand. This section documents the most important limitations honestly, along with practical mitigations for each.
+
+### 1. HNSW Index Builds Are Expensive
+
+HNSW index creation is a single-shot, CPU-intensive, memory-hungry operation. There is no incremental build — the entire dataset must be indexed at once.
+
+**What we observed:** At 1M vectors with 3072 dimensions, the HNSW build took approximately 50 minutes on a 4XL instance with 4 parallel maintenance workers. The Large tier (2 vCPU, 8 GB RAM) could not complete the build at all — it ran out of memory partway through.
+
+**Mitigations:**
+
+- **`CREATE INDEX CONCURRENTLY`** avoids locking the table during the build, so reads and writes can continue. The trade-off is that it takes longer and uses more disk space for temporary files.
+- **Tune memory and parallelism before building.** Set `maintenance_work_mem` to the highest value your tier can support, and set `max_parallel_maintenance_workers` to match your available vCPUs.
+- **Schedule builds during low-traffic windows.** Even with `CONCURRENTLY`, the build saturates CPU cores and can degrade query latency.
+- **For very large datasets, build on a replica and promote.** Create the index on a read replica, then promote the replica to primary. This avoids any impact on the production workload.
+
+### 2. Filtered Vector Search Requires Care
+
+Combining `WHERE` clauses with vector `ORDER BY` can produce unexpected results. The interaction between filtering and approximate nearest neighbor search is subtle.
+
+- **Post-filter** (`ORDER BY embedding <=> $1 LIMIT 10` with a `WHERE` clause): pgvector finds the 10 nearest vectors first, then applies the filter. If most neighbors don't match the filter, you may get fewer than 10 results — or none at all.
+- **Pre-filter** (filtering first, then searching): If the filter is very selective, the planner may not use the HNSW index efficiently, falling back to a sequential scan.
+
+**Mitigations:**
+
+- **`SET hnsw.iterative_scan = relaxed_order`** (or `strict_order`) — pgvector 0.8+ re-scans the HNSW graph with increasing `ef_search` until enough filtered results are found. This is the recommended approach for most filtered queries.
+- **`SET hnsw.max_scan_tuples = 50000`** to limit the scan depth and prevent runaway queries when filters are extremely selective.
+- **Partial indexes** for common filter values:
+  ```sql
+  CREATE INDEX ON items USING hnsw (embedding vector_cosine_ops)
+      WHERE status = 'active';
+  ```
+  If you always filter on the same column and value, a partial index eliminates the filtering problem entirely.
+- **Table partitioning** by the filter column. Each partition gets its own HNSW index, and queries against a single partition search a smaller, more focused graph.
+
+### 3. Hybrid Search (Vector + Full-Text) Requires Application Logic
+
+pgvector does not have built-in Reciprocal Rank Fusion (RRF) or score normalization. Combining `tsvector` full-text search with vector similarity requires manual implementation at the SQL or application level.
+
+**Mitigations:**
+
+- **Use a CTE or subquery pattern to combine scores.** The standard approach is RRF (Reciprocal Rank Fusion), which merges ranked lists without needing to normalize scores onto a common scale.
+- **Example SQL for RRF:**
+  ```sql
+  WITH vector_results AS (
+      SELECT id, ROW_NUMBER() OVER (ORDER BY embedding <=> $1) AS vector_rank
+      FROM items ORDER BY embedding <=> $1 LIMIT 20
+  ),
+  text_results AS (
+      SELECT id, ROW_NUMBER() OVER (ORDER BY ts_rank(tsv, query) DESC) AS text_rank
+      FROM items, plainto_tsquery($2) query
+      WHERE tsv @@ query
+      ORDER BY ts_rank(tsv, query) DESC LIMIT 20
+  )
+  SELECT COALESCE(v.id, t.id) AS id,
+         COALESCE(1.0 / (60 + v.vector_rank), 0)
+       + COALESCE(1.0 / (60 + t.text_rank), 0) AS rrf_score
+  FROM vector_results v
+  FULL OUTER JOIN text_results t ON v.id = t.id
+  ORDER BY rrf_score DESC
+  LIMIT 10;
+  ```
+- **Supabase Edge Functions** can implement more sophisticated fusion strategies (e.g., weighted RRF, learned score combination) if the SQL approach doesn't meet your needs.
+
+### 4. IVFFlat Index Quality Degrades Over Time
+
+IVFFlat indexes compute their cluster centroids at creation time. These centroids are static — they do not adapt as new data is inserted. As the data distribution shifts over time, more vectors end up in the wrong clusters, and recall degrades silently. You won't get an error; you'll just get worse results.
+
+**Mitigations:**
+
+- **Use HNSW instead.** HNSW is the recommended default index type. It does not use centroids and does not require retraining. New vectors are inserted into the graph incrementally.
+- **If using IVFFlat, schedule periodic reindexing:**
+  ```sql
+  REINDEX INDEX CONCURRENTLY idx_items_embedding;
+  ```
+  This rebuilds the centroids based on the current data distribution without locking the table.
+- **Monitor recall** by periodically sampling queries and comparing approximate results against exact search (`SET enable_indexscan = off`). If recall drops below your threshold, reindex.
+
+### 5. No Built-In Vector-Specific Monitoring
+
+PostgreSQL's monitoring tools (`pg_stat_user_indexes`, `pg_statio_user_tables`) don't distinguish vector I/O from relational I/O. There are no built-in metrics for recall quality, index health, or search accuracy.
+
+**Mitigations:**
+
+- **Use `EXPLAIN (ANALYZE, BUFFERS)`** to check whether vector searches hit the buffer cache (`shared hit`) or go to disk (`shared read`). A low cache hit ratio means the index doesn't fit in `shared_buffers`.
+- **Periodically benchmark recall** with a test query set. Run the same queries with the index enabled and disabled, and compare results. The benchmark scripts in this repository do exactly this.
+- **Monitor cache hit ratio at the table level:**
+  ```sql
+  SELECT schemaname, relname,
+         heap_blks_hit::float / nullif(heap_blks_hit + heap_blks_read, 0) AS cache_hit_ratio
+  FROM pg_statio_user_tables
+  WHERE relname = 'your_table';
+  ```
+- **Set up alerts** on query latency percentiles (p50, p95, p99) for your vector search queries. Latency spikes often indicate cache misses or index inefficiency before recall metrics would catch the problem.
+
+---
+
 ## Stage 15: Quick Reference — Sizing Cheat Sheet
 
 ### Sizing Table
