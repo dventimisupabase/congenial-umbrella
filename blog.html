@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>pgvector at 1 Million Vectors: What We Actually Measured</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #111111;
+    --bg-card: #1a1a1a;
+    --bg-code: #1a1a1a;
+    --bg-inline: #222222;
+    --border: #2a2a2a;
+    --border-active: #3ECF8E;
+    --text: #ededed;
+    --text-muted: #888888;
+    --text-dim: #666666;
+    --accent: #3ECF8E;
+    --accent-dim: rgba(62,207,142,0.12);
+    --green: #3ECF8E;
+    --mono: 'DM Mono',monospace;
+    --sans: 'Inter',-apple-system,sans-serif;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+
+  body {
+    font-family: var(--sans);
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.8;
+    font-size: 16px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Nav */
+  nav {
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 24px 24px 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .nav-brand {
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--text-muted);
+    text-decoration: none;
+  }
+
+  .nav-brand span { color: var(--accent); }
+
+  nav a {
+    font-size: 13px;
+    color: var(--text-muted);
+    text-decoration: none;
+    transition: color 0.2s;
+  }
+
+  nav a:hover { color: var(--text); }
+
+  .nav-links { display: flex; gap: 20px; }
+
+  /* Article */
+  article {
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 48px 24px 96px;
+  }
+
+  /* Typography */
+  article h1 {
+    font-size: clamp(28px, 5vw, 40px);
+    font-weight: 600;
+    letter-spacing: -0.03em;
+    line-height: 1.2;
+    margin-bottom: 16px;
+  }
+
+  .subtitle {
+    font-size: 17px;
+    color: var(--text-muted);
+    line-height: 1.7;
+    margin-bottom: 32px;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 32px;
+  }
+
+  article h2 {
+    font-size: 24px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    margin: 48px 0 16px;
+    padding-top: 16px;
+  }
+
+  article h3 {
+    font-size: 18px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    margin: 32px 0 12px;
+  }
+
+  article p {
+    margin: 0 0 16px;
+    color: var(--text);
+  }
+
+  article strong { color: #fff; }
+
+  article a {
+    color: var(--accent);
+    text-decoration: none;
+    border-bottom: 1px solid rgba(62,207,142,0.3);
+    transition: border-color 0.2s;
+  }
+
+  article a:hover { border-color: var(--accent); }
+
+  /* Tables */
+  article table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 16px 0 24px;
+    font-size: 14px;
+  }
+
+  article th {
+    text-align: left;
+    padding: 10px 14px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    font-weight: 600;
+    font-size: 13px;
+    color: var(--text-muted);
+    letter-spacing: 0.02em;
+  }
+
+  article td {
+    padding: 10px 14px;
+    border: 1px solid var(--border);
+    vertical-align: top;
+  }
+
+  article tr:hover td { background: rgba(62,207,142,0.03); }
+
+  /* Code */
+  article code {
+    font-family: var(--mono);
+    font-size: 0.875em;
+    background: var(--bg-inline);
+    padding: 2px 6px;
+    border-radius: 4px;
+  }
+
+  article pre {
+    background: var(--bg-code);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 20px;
+    overflow-x: auto;
+    margin: 16px 0 24px;
+    font-size: 13px;
+    line-height: 1.6;
+  }
+
+  article pre code {
+    background: none;
+    padding: 0;
+    font-size: inherit;
+  }
+
+  /* Blockquotes */
+  article blockquote {
+    border-left: 3px solid var(--accent);
+    padding: 12px 20px;
+    margin: 16px 0 24px;
+    background: var(--accent-dim);
+    border-radius: 0 6px 6px 0;
+    color: var(--text-muted);
+    font-size: 15px;
+  }
+
+  article blockquote strong { color: var(--text); }
+
+  /* Lists */
+  article ul, article ol {
+    margin: 8px 0 16px;
+    padding-left: 24px;
+  }
+
+  article li { margin: 4px 0; }
+
+  /* HR */
+  article hr {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 48px 0;
+  }
+
+  /* Images placeholder */
+  article img { max-width: 100%; border-radius: 8px; }
+
+  /* Footer */
+  footer {
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 32px 24px;
+    border-top: 1px solid var(--border);
+    font-size: 13px;
+    color: var(--text-dim);
+  }
+
+  footer a {
+    color: var(--text-muted);
+    text-decoration: none;
+  }
+
+  footer a:hover { color: var(--accent); }
+
+  /* Loading */
+  .loading {
+    text-align: center;
+    padding: 64px 24px;
+    color: var(--text-muted);
+    font-family: var(--mono);
+    font-size: 14px;
+  }
+
+  /* Responsive */
+  @media (max-width: 600px) {
+    article { padding: 32px 16px 64px; }
+    article h1 { font-size: 26px; }
+    article table { font-size: 12px; }
+    article th, article td { padding: 6px 8px; }
+  }
+</style>
+</head>
+<body>
+
+<nav>
+  <a href="./" class="nav-brand"><span>pg</span>vector sizing</a>
+  <div class="nav-links">
+    <a href="./sizer.html">Sizer</a>
+    <a href="./field-guide.html">Field Guide</a>
+    <a href="https://github.com/dventimisupabase/congenial-umbrella">GitHub</a>
+  </div>
+</nav>
+
+<article id="content">
+  <div class="loading">Loading article...</div>
+</article>
+
+<footer>
+  <a href="https://github.com/dventimisupabase/congenial-umbrella">dventimisupabase/congenial-umbrella</a>
+</footer>
+
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/highlight.min.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/languages/sql.min.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/languages/python.min.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/languages/bash.min.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/styles/github-dark.min.css">
+<script>
+(async function() {
+  const res = await fetch('./blog-pgvector-at-scale.md');
+  if (!res.ok) {
+    document.getElementById('content').innerHTML =
+      '<div class="loading">Failed to load article.</div>';
+    return;
+  }
+  const md = await res.text();
+
+  // Extract first line as title, rest as body
+  const lines = md.split('\n');
+  let title = '';
+  let bodyStart = 0;
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].startsWith('# ')) {
+      title = lines[i].replace(/^# /, '');
+      bodyStart = i + 1;
+      break;
+    }
+  }
+
+  // Find first paragraph as subtitle
+  let subtitle = '';
+  let contentStart = bodyStart;
+  for (let i = bodyStart; i < lines.length; i++) {
+    if (lines[i].trim() === '') continue;
+    if (lines[i].startsWith('#') || lines[i].startsWith('|') || lines[i].startsWith('```')) break;
+    // Collect paragraph lines until empty line
+    let paraLines = [];
+    for (let j = i; j < lines.length; j++) {
+      if (lines[j].trim() === '') { contentStart = j + 1; break; }
+      paraLines.push(lines[j]);
+    }
+    subtitle = paraLines.join(' ');
+    break;
+  }
+
+  const renderer = new marked.Renderer();
+  renderer.code = function({ text, lang }) {
+    if (lang && hljs.getLanguage(lang)) {
+      const highlighted = hljs.highlight(text, { language: lang }).value;
+      return `<pre><code class="hljs language-${lang}">${highlighted}</code></pre>`;
+    }
+    const escaped = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    return `<pre><code>${escaped}</code></pre>`;
+  };
+
+  marked.setOptions({ gfm: true, breaks: false, renderer });
+
+  const bodyMd = lines.slice(contentStart).join('\n');
+  const bodyHtml = marked.parse(bodyMd);
+
+  document.getElementById('content').innerHTML =
+    `<h1>${title}</h1>` +
+    `<div class="subtitle">${subtitle}</div>` +
+    bodyHtml;
+
+  document.title = title;
+})();
+</script>
+</body>
+</html>
