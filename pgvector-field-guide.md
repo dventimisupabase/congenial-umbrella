@@ -677,29 +677,37 @@ Minimum 8 GB (Supabase base allocation).
 Per-query time depends on ef_search and the cost of each distance computation
 (driven by dimensions and vector type).
 
-**Base query time lookup (ef_search = 40, warm cache):**
+**Measured server-side query times (EXPLAIN ANALYZE, 1M vectors, warm cache, Supabase 4XL):**
 
-| Dimensions | halfvec | vector (float32) |
+| ef_search | gist-960 (960d, vector) | dbpedia (3072d, halfvec) |
 |---|---|---|
-| dims < 512 | ~0.3 ms | ~0.5 ms |
-| dims 512-1024 | ~0.5 ms | ~1.0 ms |
-| dims 1024-2048 | ~1.0 ms | ~1.5 ms |
-| dims 2048-4096 | ~1.5 ms | ~2.5 ms |
+| 40 | 18 ms (1.0x) | 34 ms (1.0x) |
+| 80 | 15 ms (0.8x) | 27 ms (0.8x) |
+| 128 | 17 ms (1.0x) | 45 ms (1.3x) |
+| 200 | 24 ms (1.4x) | 67 ms (2.0x) |
+| 400 | 65 ms (3.7x) | 293 ms (8.7x) |
+| 800 | 115 ms (6.5x) | 646 ms (19.2x) |
 
-**Adjust for your actual ef_search:**
+**Key observations:**
+- The relationship between ef_search and latency is **superlinear**, not linear — especially for high-dimensional vectors. Doubling ef_search from 200→400 increases latency 4x for 3072d.
+- Higher dimensions amplify the ef_search cost: 960d scales ~6.5x at ef=800 while 3072d scales ~19x.
+- For compute sizing estimates, use the measured values above rather than a linear formula. Interpolate for other dimension/ef combinations.
+
+**Rough estimation formula** (conservative, for dimensions and ef_search not in the table):
 
 ```mermaid
 flowchart LR
-    EF["your ef_search"] --> Div["ef_adjustment =\nyour_ef_search / 40"] --> Mul["per_query_base =\ntable_value * ef_adjustment"]
-    TV["table_value\n(from lookup)"] --> Mul
+    EF["your ef_search"] --> Div["ef_ratio =\nyour_ef_search / 40"] --> Pow["ef_adjustment =\nef_ratio ^ 1.3\n(superlinear)"] --> Mul["per_query_ms =\nbase_ms * ef_adjustment"]
+    TV["base_ms at ef=40\n(18ms for 960d vector,\n34ms for 3072d halfvec)"] --> Mul
 
     style EF fill:#1e3a5f,stroke:#3b82f6,color:#93c5fd
     style TV fill:#1e3a5f,stroke:#3b82f6,color:#93c5fd
+    style Pow fill:#422006,stroke:#f59e0b,color:#fde68a
     style Div fill:#27272a,stroke:#3f3f46,color:#a1a1aa
     style Mul fill:#14532d,stroke:#22c55e,color:#86efac
 ```
 
-Examples: ef_search = 40 -> 1.0x (baseline), ef_search = 100 -> 2.5x, ef_search = 200 -> 5.0x, ef_search = 400 -> 10.0x.
+> **Use the measured table above for production sizing.** The formula is a fallback for dimensions/ef values not covered by the measurements.
 
 > **pgvector quantization and rescoring:** For `halfvec` and direct `vector` indexes,
 > the distance computation uses the stored vector directly — no separate rescoring step.

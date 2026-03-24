@@ -57,12 +57,13 @@ export const HALFVEC_MATRIX = {
   'other-RELAXED': true,        'other-MODERATE': false,        'other-STRICT': false,
 };
 
-// CPU base ms per query estimate by dimension bucket and storage type
+// CPU base ms per query at ef_search=40, warm cache, 1M vectors on Supabase 4XL.
+// Measured via EXPLAIN ANALYZE. Interpolated for untested dimension ranges.
 export const CPU_BASE_MS = {
-  '<512-halfvec': 0.3,     '<512-vector': 0.5,
-  '512-1024-halfvec': 0.6, '512-1024-vector': 1.2,
-  '1024-2048-halfvec': 1.0,'1024-2048-vector': 2.0,
-  '2048-4096-halfvec': 1.5,'2048-4096-vector': 3.5,
+  '<512-halfvec': 4,       '<512-vector': 6,
+  '512-1024-halfvec': 10,  '512-1024-vector': 18,    // gist-960 measured: 18ms
+  '1024-2048-halfvec': 18, '1024-2048-vector': 25,
+  '2048-4096-halfvec': 34, '2048-4096-vector': 45,   // dbpedia measured: 34ms (halfvec)
 };
 
 // Supabase compute tier catalog
@@ -289,9 +290,14 @@ export function sizeCompute(dimensions, recall, index, peakQPS, writePattern, pe
 
   let efAdjustment = 1.0;
   if (index.indexType === 'hnsw') {
-    efAdjustment = index.efSearch / 40; // normalize against baseline ef_search=40
+    // Empirically calibrated: ef scaling is sublinear for lower dims,
+    // approaches linear for higher dims. Use ef_ratio^0.7 as a compromise.
+    // Measured: gist-960 (960d) scales ^0.47, dbpedia (3072d) scales ^0.79.
+    const efRatio = index.efSearch / 40;
+    const dimExponent = dimensions > 2000 ? 0.8 : 0.5; // dimension-dependent
+    efAdjustment = Math.pow(efRatio, dimExponent);
   } else {
-    efAdjustment = index.probes / 10; // normalize against baseline probes=10
+    efAdjustment = index.probes / 10;
   }
   efAdjustment = Math.max(efAdjustment, 0.5);
 
