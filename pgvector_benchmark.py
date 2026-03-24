@@ -100,7 +100,7 @@ GIST_CONFIG = ScenarioConfig(
     ops_class="vector_l2_ops",
     hnsw_m=24,
     ef_construction=256,
-    ef_search=128,
+    ef_search=400,       # empirically determined: 128 gives 96.5%, 400 gives 99%
     target_recall=0.99,
     top_k=10,
 )
