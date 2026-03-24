@@ -38,7 +38,7 @@ The guide assumes you already know:
 ### Key Properties of pgvector
 
 - **Max dimensions**: 16,000 for `vector` and `halfvec`, 64,000 for `bit`, unlimited non-zero elements for `sparsevec`
-- **HNSW dimension limit**: 2,000 — vectors above this MUST use a `halfvec` expression index
+- **HNSW dimension limits**: `vector` up to 2,000 dims, `halfvec` up to 4,000 dims, `binary_quantize` up to 64,000 dims
 - **Storage per element**: `vector` = `4 * dims + 8` bytes, `halfvec` = `2 * dims + 8` bytes
 - **Index types**: HNSW (graph-based, better recall) and IVFFlat (partition-based, faster builds)
 - **Distance metrics**: L2 (`<->`), cosine (`<=>`), inner product (`<#>`), L1 (`<+>`), Hamming (`<~>`), Jaccard (`<%>`)
@@ -78,11 +78,32 @@ flowchart TD
 | **B** | Neural vision, or unknown | Cosine | `<=>` | `halfvec` viable for relaxed/moderate recall. Test carefully — some vision models are sensitive to float16 truncation. For vision models, verify distance metric with model docs. Use `<#>` if model was trained with dot-product objective. |
 | **C** | Classical CV features (GIST, SIFT, HOG) | Euclidean (L2) | `<->` | Non-negative, magnitude-heavy, not centered at zero. Full `vector` (float32) often required for high recall. Using Cosine on non-normalized features gives wrong results. pgvector also supports L1/Manhattan (`<+>`). |
 
-> **NOTE on pgvector vs Qdrant compression:** pgvector does NOT have binary quantization,
-> scalar quantization, or product quantization. The only native "compression" is
-> `halfvec` (float16, 2 bytes/dim) vs `vector` (float32, 4 bytes/dim) — a 2x reduction,
-> not 4x or 32x. There is no quantization layer with oversampling/rescoring. What you
-> index is what you search.
+> **pgvector compression options:**
+>
+> | Method | Compression | Index dims limit | How it works |
+> |---|---|---|---|
+> | `halfvec` (float16) | 2x | 4,000 | Store or cast to `halfvec` — 2 bytes/dim. Expression index: `(embedding::halfvec(N))` |
+> | `binary_quantize` | 32x | 64,000 | Expression index: `(binary_quantize(embedding)::bit(N))` with `bit_hamming_ops`. Re-rank with original vectors for accuracy. |
+> | `subvector` | variable | 2,000 per subvec | Index a prefix: `(subvector(embedding, 1, N)::vector(N))`. For Matryoshka models that support truncation. |
+>
+> Binary quantization is especially powerful for high-dimensional neural text embeddings
+> (Class A) where the 32x index compression dramatically reduces memory requirements.
+> The re-ranking pattern (search quantized index for top-N candidates, then re-rank by
+> original vectors for top-K) mirrors Qdrant's oversampling/rescoring approach:
+>
+> ```sql
+> -- Binary quantized index (32x smaller than float32)
+> CREATE INDEX ON items USING hnsw ((binary_quantize(embedding)::bit(1536)) bit_hamming_ops);
+>
+> -- Search: coarse filter on quantized, re-rank on original
+> SELECT * FROM (
+>     SELECT * FROM items
+>     ORDER BY binary_quantize(embedding)::bit(1536) <~> binary_quantize($1)
+>     LIMIT 100  -- oversampling: fetch 10x candidates
+> ) candidates
+> ORDER BY embedding <=> $1  -- re-rank with full precision
+> LIMIT 10;
+> ```
 
 **Record: your Embedding Class and your Distance Metric (pgvector operator).**
 
@@ -130,11 +151,18 @@ whether `halfvec` is viable or you need full `vector`.
 > SELECT * FROM items ORDER BY embedding::halfvec(1536) <=> $1::halfvec(1536) LIMIT 10;
 > ```
 
-### High-Dimension Constraint: 3072d and Above
+### High-Dimension Constraint: 2,000+ Dimensions
 
 Vectors with more than 2,000 dimensions **cannot** use a direct HNSW index on a `vector`
-column — pgvector enforces a 2,000-dimension limit for HNSW. You MUST use a `halfvec`
-expression index:
+column. You have three options depending on your dimension count:
+
+| Dimensions | Option | Compression | Index expression |
+|---|---|---|---|
+| 2,001 – 4,000 | `halfvec` expression index | 2x | `(embedding::halfvec(N))` |
+| 2,001 – 64,000 | Binary quantization | 32x | `(binary_quantize(embedding)::bit(N))` |
+| Any | Subvector indexing | variable | `(subvector(embedding, 1, K)::vector(K))` |
+
+**halfvec expression index** (recommended for 2,001–4,000 dims):
 
 ```sql
 -- Table stores float32 (no dimension limit on storage)
@@ -143,11 +171,27 @@ CREATE TABLE items (
     embedding vector(3072)
 );
 
--- Index MUST use halfvec cast (HNSW limit is 4000 for halfvec)
+-- Index uses halfvec cast (limit is 4,000 for halfvec HNSW)
 CREATE INDEX ON items USING hnsw ((embedding::halfvec(3072)) halfvec_cosine_ops);
 
 -- Queries must cast to match the index
 SELECT * FROM items ORDER BY embedding::halfvec(3072) <=> $1::halfvec(3072) LIMIT 10;
+```
+
+**Binary quantization** (for maximum compression or >4,000 dims):
+
+```sql
+-- Index uses binary quantization (limit is 64,000 for bit HNSW)
+CREATE INDEX ON items USING hnsw ((binary_quantize(embedding)::bit(3072)) bit_hamming_ops);
+
+-- Search with re-ranking for accuracy
+SELECT * FROM (
+    SELECT * FROM items
+    ORDER BY binary_quantize(embedding)::bit(3072) <~> binary_quantize($1)
+    LIMIT 100  -- coarse candidates
+) candidates
+ORDER BY embedding <=> $1  -- re-rank with full precision
+LIMIT 10;
 ```
 
 Additionally, 3072-dimension `vector` rows are ~12 KB — exceeding PostgreSQL's 8 KB page
@@ -658,9 +702,12 @@ flowchart LR
 
 Examples: ef_search = 40 -> 1.0x (baseline), ef_search = 100 -> 2.5x, ef_search = 200 -> 5.0x, ef_search = 400 -> 10.0x.
 
-> **pgvector has no quantization layer with rescoring.** Unlike Qdrant, there is no
-> separate oversampling/rescoring step. The distance computation in the index uses the
-> actual stored vector (halfvec or vector), not a compressed proxy.
+> **pgvector quantization and rescoring:** For `halfvec` and direct `vector` indexes,
+> the distance computation uses the stored vector directly — no separate rescoring step.
+> However, **binary quantization** (`binary_quantize()`) does support a two-phase
+> search pattern: coarse search on the quantized index, then re-rank candidates using
+> original full-precision vectors. This mirrors Qdrant's oversampling/rescoring approach
+> and can dramatically reduce index memory for high-dimensional embeddings.
 
 ### Step 8b: Calculate Required Cores for QPS
 
@@ -1304,8 +1351,8 @@ flowchart TD
    shows higher ef_search is needed, especially for STRICT recall (>98%).
 
 4. **"I can use a direct HNSW index on 3072d vectors"**
-   No. pgvector HNSW has a 2,000-dimension limit. You must use a halfvec expression
-   index. This also means 3072d vectors always use float16 in the index.
+   No. pgvector HNSW has a 2,000-dimension limit for `vector`. Use a `halfvec`
+   expression index (up to 4,000 dims) or binary quantization (up to 64,000 dims).
 
 5. **"INSERT is fine for bulk loads"**
    COPY is 4-5x faster. For 1M+ vectors, the difference is hours vs minutes.
