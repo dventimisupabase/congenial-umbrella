@@ -578,8 +578,7 @@ flowchart TD
 
 ### Step 6d: effective_cache_size
 
-Tells the query planner how much total memory is available for caching (shared_buffers
-+ OS page cache). Does not allocate memory — purely advisory.
+Tells the query planner how much total memory is available for caching (shared_buffers + OS page cache). Does not allocate memory — purely advisory.
 
 **Rule of thumb**: 75% of total RAM.
 
