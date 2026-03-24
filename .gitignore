@@ -3,3 +3,4 @@ benchmark_results.json
 .vercel
 qdrant-field-guide.md
 case-for-pgvector.md
+blog-pgvector-at-scale.md
