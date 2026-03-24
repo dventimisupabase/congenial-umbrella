@@ -177,7 +177,11 @@ export function sizeMemory(numVectors, dimensions, recall, index) {
   if (index.indexType === 'hnsw') {
     // HNSW graph: each node stores ~(2 * m) neighbor pointers (8 bytes each) + vector copy
     const graphMB = numVectors * (index.m * 2 * 8 + vectorBytes) / (1024 * 1024);
-    indexMB = graphMB * 1.2; // 20% overhead for internal structures
+    // Empirically calibrated overhead multiplier (validated at 1M vectors on Supabase):
+    //   vector (float32): 1.75x — gist-960 predicted 7050 MB vs actual 7678 MB
+    //   halfvec (float16): 1.3x  — dbpedia predicted 7927 MB vs actual 7813 MB
+    const overheadMultiplier = recall.storageType === 'halfvec' ? 1.3 : 1.75;
+    indexMB = graphMB * overheadMultiplier;
   } else {
     // IVFFlat: stores vectors in list buckets + centroid data
     const listOverhead = index.lists * vectorBytes / (1024 * 1024);
