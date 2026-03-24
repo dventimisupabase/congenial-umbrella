@@ -1352,10 +1352,15 @@ factor (tested 1x–20x). This suggests that the binary quantized HNSW graph its
 poor connectivity for cosine similarity on these embeddings — increasing oversampling
 doesn't help because the coarse BQ search doesn't find the right candidates to re-rank.
 
-**Binary quantization may require different HNSW parameters** (higher m, higher ef_construction)
-to compensate for the precision loss in the graph. This is an area for further investigation.
+**Root cause:** The BQ HNSW graph with m=16 is too sparse — at `LIMIT 200`, the search
+only returned 40 candidates. Binary quantization with Hamming distance creates a very
+different distance space than cosine similarity. The graph needs **much higher m
+(32+) and ef_construction (256+)** to build enough connectivity to compensate for the
+precision loss. This is an area for further investigation.
+
 For now, **halfvec expression indexing remains the recommended approach** for high-dimensional
-vectors where binary quantization hasn't been specifically validated.
+vectors. Binary quantization's 12x compression is attractive but requires careful parameter
+tuning that hasn't been validated yet.
 
 8. **3072d vectors require special handling.** Must use halfvec expression index
    (HNSW 2000d limit), must use STORAGE EXTERNAL (exceeds 8 KB page), and the index
