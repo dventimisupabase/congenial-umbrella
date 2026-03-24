@@ -134,19 +134,21 @@ export function indexStrategy(regime, topK, numVectors, indexType) {
 
     const efSearchCalc = HNSW_EF_SEARCH_MULTIPLIER[regime] * topK;
     const efSearchFloor = HNSW_EF_SEARCH_FLOOR[regime];
-    let efSearch = Math.max(efSearchCalc, efSearchFloor);
-    let efNote = efSearch > efSearchCalc
-      ? `floor-adjusted from ${efSearchCalc} to ${efSearch}`
-      : `${HNSW_EF_SEARCH_MULTIPLIER[regime]}x top_k`;
+    let efSearchBase = Math.max(efSearchCalc, efSearchFloor);
 
-    // Scale adjustment: ef_search formulas underestimate at 1M+ vectors.
-    // Empirically, gist-960 at 1M needed ef_search=400 (not 200) for 99% recall.
-    if (regime === 'STRICT' && numVectors >= 1_000_000) {
-      efSearch = Math.max(efSearch, 400);
-      if (efSearch === 400) {
-        efNote = `scale-adjusted to ${efSearch} for ${(numVectors / 1_000_000).toFixed(0)}M+ vectors`;
-      }
-    }
+    // Scale factor: HNSW graphs are deeper at higher vector counts,
+    // requiring more exploration. Calibrated against 1M benchmarks:
+    //   gist-960 at 1M: base=200, needed 300 → scale factor 1.5
+    //   log10(1M / 10K) = 2, so 1 + 0.25 * 2 = 1.5 ✓
+    const scaleFactor = numVectors > 10_000
+      ? 1 + 0.25 * Math.log10(numVectors / 10_000)
+      : 1.0;
+    let efSearch = Math.round(efSearchBase * scaleFactor);
+    let efNote = scaleFactor > 1.01
+      ? `${efSearchBase} × ${scaleFactor.toFixed(2)} scale factor for ${(numVectors / 1000).toFixed(0)}K vectors`
+      : (efSearchBase > efSearchCalc
+        ? `floor-adjusted from ${efSearchCalc} to ${efSearchBase}`
+        : `${HNSW_EF_SEARCH_MULTIPLIER[regime]}x top_k`);
 
     return { indexType: 'hnsw', m, efConstruction, efSearch, efNote };
   }

@@ -376,7 +376,7 @@ flowchart TD
     FM --> Use
     FS --> Use
 
-    Use --> Warn["WARNING: These formulas\nunderestimate at scale.\nSee empirical data below."]
+    Use --> Scale["Apply scale factor:\nef_search × (1 + 0.25 × log10(vectors / 10K))\nDeeper graphs need more exploration"]
 
     style Calc fill:#18181b,stroke:#3f3f46,color:#e4e4e7
     style Floor fill:#18181b,stroke:#3f3f46,color:#e4e4e7
@@ -384,23 +384,32 @@ flowchart TD
     style FM fill:#422006,stroke:#f59e0b,color:#fde68a
     style FS fill:#3b1f1f,stroke:#ef4444,color:#fca5a5
     style Use fill:#27272a,stroke:#3f3f46,color:#a1a1aa
-    style Warn fill:#3b1f1f,stroke:#ef4444,color:#fca5a5
+    style Scale fill:#422006,stroke:#f59e0b,color:#fde68a
 ```
 
-**CRITICAL: These formulas underestimate at scale.** At 1M vectors, empirical testing
-on Supabase shows that STRICT recall targets need significantly higher ef_search than
-the formula suggests:
+**Scale factor:** HNSW graphs are deeper at higher vector counts, requiring more
+exploration to maintain recall. The sizer applies a log-scale adjustment:
 
-| Dataset | Vectors | top_k | Formula result | Actual ef_search needed | Recall achieved |
-|---|---|---|---|---|---|
-| gist-960 (99% target) | 1,000,000 | 10 | max(80, 200) = 200 | **400** | 99.6% |
-| dbpedia-3072 (95% target) | 1,000,000 | 100 | max(200, 40) = 200 | 200 | 98.3% |
+> **ef_search = base × (1 + 0.25 × log10(vectors / 10,000))**
 
-The formula works well for RELAXED targets but consistently underestimates for STRICT
-(>98%) recall at 1M+ vectors. **Always validate ef_search empirically** against your
-recall target at production scale. Higher ef_search increases latency proportionally
-(~2x ef_search = ~2x query time) but recall improvements are nonlinear — the last
-few percentage points are expensive.
+| Vectors | Scale factor | STRICT base=200 → adjusted |
+|---|---|---|
+| 10,000 | 1.0x | 200 |
+| 100,000 | 1.25x | 250 |
+| 1,000,000 | 1.5x | **300** |
+| 10,000,000 | 1.75x | 350 |
+
+This was calibrated against 1M-vector benchmarks on Supabase:
+
+| Dataset | top_k | Adjusted ef_search | Measured recall |
+|---|---|---|---|
+| gist-960 (99% target) | 10 | 300 | 99.1% (PASS) |
+| dbpedia (95% target) | 100 | 300 | 99.0% (PASS) |
+
+**ef_search is a query-time parameter** — you can tune it after deployment without rebuilding
+the index. Start with the sizer's recommendation, then adjust based on your measured recall.
+Higher ef_search increases latency but recall improvements are nonlinear — the last few
+percentage points are expensive.
 
 ### Step 4d: Parallel Index Build
 
@@ -1250,9 +1259,9 @@ server-side (measured via `EXPLAIN ANALYZE`, excluding network round-trip).
    4XL (64 GB RAM), we set shared_buffers to 20 GB (31%) to hold both indexes.
    For a single-index workload, you'd set it to index_size + headroom.
 
-3. **ef_search formulas underestimate at scale.** For 99% recall on gist-960,
-   the formula gives ef_search=200 but the empirical requirement is ef_search=400.
-   Always validate at production scale.
+3. **ef_search must scale with vector count.** The sizer applies a log-scale
+   adjustment: at 1M vectors, ef_search is 1.5x the base value. At 10K it's
+   unadjusted. Always validate with your actual data.
 
 4. **Higher ef_search trades latency for recall.** ~2x ef_search = ~2x latency,
    but recall improvements are nonlinear — the last few percentage points are expensive.
@@ -1448,9 +1457,10 @@ flowchart TD
    RAM solves latency, not recall. If recall is below target, you need higher
    ef_search or better HNSW parameters (m, ef_construction) — not more memory.
 
-3. **"ef_search formula gives the right value"**
-   The formula is a starting point. At 1M+ vectors, empirical testing consistently
-   shows higher ef_search is needed, especially for STRICT recall (>98%).
+3. **"I can skip benchmarking ef_search"**
+   The sizer produces a good starting value (including a scale factor for large datasets),
+   but recall depends on data distribution. Always benchmark at your target vector count
+   and adjust ef_search — it's a query-time parameter that doesn't require rebuilding.
 
 4. **"I can use a direct HNSW index on 3072d vectors"**
    No. pgvector HNSW has a 2,000-dimension limit for `vector`. Use a `halfvec`

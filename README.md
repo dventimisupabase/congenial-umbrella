@@ -63,9 +63,9 @@ The HNSW index **must** fit entirely in `shared_buffers` for acceptable query pe
 
 **40-60x latency degradation** when the index doesn't fit. Use `pg_prewarm` after every restart.
 
-### ef_search Formulas Underestimate at Scale
+### ef_search Is the Primary Recall Tuning Knob
 
-For 99% recall on gist-960 at 1M vectors, the formula gives ef_search=200 but the empirical requirement is **ef_search=300+**. Always validate at production scale.
+`hnsw.ef_search` controls the recall/latency trade-off at query time. The sizer produces a starting value, but the right ef_search for your workload depends on your data distribution and can only be determined by benchmarking. Here's what we measured at 1M vectors:
 
 | ef_search | gist-960 Recall@10 | dbpedia Recall@100 |
 |---|---|---|
@@ -73,6 +73,8 @@ For 99% recall on gist-960 at 1M vectors, the formula gives ef_search=200 but th
 | 200 | 98.5% | 98.7% |
 | **300** | **99.1%** | 99.0% |
 | 400 | 99.6% | 99.1% |
+
+For gist-960's 99% recall target, ef_search=300 was the minimum. For dbpedia's 95% target, ef_search=128 was already sufficient. The sizer accounts for this scale dependence, but **always benchmark at your target vector count** — recall behavior at 10K vectors does not predict recall at 1M.
 
 ### HNSW vs IVFFlat
 
