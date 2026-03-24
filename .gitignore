@@ -2,3 +2,4 @@ supabase/
 benchmark_results.json
 .vercel
 qdrant-field-guide.md
+case-for-pgvector.md
