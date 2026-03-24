@@ -202,12 +202,13 @@ export function sizeMemory(numVectors, dimensions, recall, index) {
   // Should be ~75% of total RAM
   const idealEffectiveCacheMB = indexMB + tableMB;
 
-  // maintenance_work_mem: needed for index builds
+  // maintenance_work_mem: needed for index builds (temporary, not permanent)
+  // Cap at (tier_RAM - shared_buffers) * 0.5 so it doesn't starve the OS
   let maintenanceWorkMemMB;
   if (index.indexType === 'hnsw') {
-    maintenanceWorkMemMB = Math.max(indexMB * 1.5, 1024); // HNSW builds need significant memory
+    maintenanceWorkMemMB = Math.max(indexMB * 1.5, 1024);
   } else {
-    maintenanceWorkMemMB = Math.max(tableMB * 0.5, 512); // IVFFlat is lighter
+    maintenanceWorkMemMB = Math.max(tableMB * 0.5, 512);
   }
 
   // Total RAM needed: shared_buffers MUST hold the full HNSW index
@@ -226,6 +227,8 @@ export function sizeMemory(numVectors, dimensions, recall, index) {
   const sharedBuffersMB = idealSharedBuffersMB; // index + 10% table for hot rows
   const sharedBuffersGB = Math.max(Math.ceil(sharedBuffersMB / 1024), 1);
   const effectiveCacheSizeGB = Math.max(Math.round(roundedGB * 0.75), 2);
+
+  // Note: maintenance_work_mem is capped in postgresConfig() using actual instance RAM
 
   return {
     tableMB: Math.round(tableMB),
@@ -374,13 +377,25 @@ export function selectInstance(compute, memory, disk) {
 // Stage 8: Postgres Configuration
 // ---------------------------------------------------------------------------
 
-export function postgresConfig(memory, index, compute, writePattern) {
+export function postgresConfig(memory, index, compute, writePattern, instance) {
   const config = {};
 
+  // Use actual instance RAM (may be larger than memory.roundedGB if compute-driven)
+  const actualRamGB = instance ? instance.tierRamGB : memory.roundedGB;
+
   config.shared_buffers = `${memory.sharedBuffersGB}GB`;
-  config.effective_cache_size = `${memory.effectiveCacheSizeGB}GB`;
-  config.maintenance_work_mem = `${Math.round(memory.maintenanceWorkMemMB)}MB`;
-  config.work_mem = `${Math.max(Math.round(memory.roundedGB * 1024 / (compute.totalVcpus * 4)), 64)}MB`;
+  config.effective_cache_size = `${Math.max(Math.round(actualRamGB * 0.75), 2)}GB`;
+
+  // Cap maintenance_work_mem at 50% of (instance RAM - shared_buffers)
+  // Only used during index builds, must leave room for shared_buffers + OS
+  const availableForMaintenanceMB = (actualRamGB - memory.sharedBuffersGB) * 1024;
+  const cappedMaintenanceMB = Math.min(
+    memory.maintenanceWorkMemMB,
+    Math.max(Math.round(availableForMaintenanceMB * 0.5), 512),
+  );
+  config.maintenance_work_mem = `${cappedMaintenanceMB}MB`;
+
+  config.work_mem = `${Math.max(Math.round(actualRamGB * 1024 / (compute.totalVcpus * 4)), 64)}MB`;
 
   // Parallel workers
   config.max_parallel_workers_per_gather = Math.min(Math.max(Math.floor(compute.totalVcpus / 4), 1), 4);
@@ -531,7 +546,7 @@ export function sizeCluster(config) {
   const disk = sizeDisk(numVectors, dimensions, recall, memory, index);
   const compute = sizeCompute(dimensions, recall, index, peakQPS, writePattern, peakWriteRate);
   const instance = selectInstance(compute, memory, disk);
-  const pgConfig = postgresConfig(memory, index, compute, writePattern);
+  const pgConfig = postgresConfig(memory, index, compute, writePattern, instance);
   const optimizations = suggestOptimizations(classification, recall, index, dimensions, topK, numVectors);
   const sql = generateSQL(datasetName, dimensions, classification, recall, index);
 
