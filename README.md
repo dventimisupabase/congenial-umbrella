@@ -136,6 +136,6 @@ Two scenarios are included in `scenarios.json` and used throughout the field gui
 
 - **Compute tiers**: Micro through 16XL (2-core shared to 64-core dedicated)
 - **shared_buffers**: Configurable via CLI (`supabase postgres-config update`), requires restart
-- **Disk**: Auto-scales (goes read-only briefly during resize — the benchmark script has retry logic for this)
+- **Disk**: Auto-scales at 90% capacity (1.5x expansion, 6h cooldown). Enters read-only at 95% if hit between expansions. Pre-size disk before large imports.
 - **Connection pooling**: Supavisor in session mode (port 5432) required for `SET` commands; transaction mode (port 6543) resets session state
 - **pg_prewarm**: Available on all tiers — use it after every restart or compute tier change

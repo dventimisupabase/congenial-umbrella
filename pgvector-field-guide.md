@@ -669,10 +669,16 @@ total_disk = base_disk + wal_space + vacuum_headroom + backup_space
 
 Minimum 8 GB (Supabase base allocation).
 
-> **Supabase disk auto-scaling:** Supabase automatically scales disk when usage exceeds
-> 90% of the current allocation. However, during a disk resize the database enters
-> **read-only mode** temporarily. Plan your initial disk allocation to avoid unexpected
-> read-only events during write-heavy operations (bulk loads, index builds).
+> **Supabase disk auto-scaling:** Supabase automatically expands disk when usage exceeds
+> 90% of the current allocation (to 1.5x the current size). However, auto-scaling can
+> only occur **once every 6 hours**. If you hit 95% of disk within that cooldown window,
+> the database enters **read-only mode** until usage drops below 95%. Bulk imports
+> exceeding 1.5x the current disk size will also trigger read-only mode.
+>
+> **Recommendation:** For large initial loads (like ingesting 1M+ vectors), manually
+> increase disk size on the Database Settings page *before* starting the import.
+> Target < 50% utilization after the load completes to leave headroom for indexes,
+> WAL, and future growth.
 
 **Record: your total disk requirement.**
 
@@ -1086,7 +1092,7 @@ Key metrics to watch on Supabase:
 | `shared read` in EXPLAIN | = 0 for hot queries | Index not fitting in shared_buffers |
 | Dead tuples / live tuples | < 10% | VACUUM not keeping up; tune autovacuum |
 | WAL generation rate | Stable | Check for unexpected write patterns |
-| Disk usage | < 80% of allocation | Prevent auto-scaling read-only events |
+| Disk usage | < 60% of allocation | Leave headroom; auto-scale cooldown is 6h, read-only at 95% |
 
 ```sql
 -- Cache hit ratio (should be > 0.99)
