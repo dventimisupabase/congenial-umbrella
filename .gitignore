@@ -1,3 +1,4 @@
 supabase/
 benchmark_results.json
 .vercel
+qdrant-field-guide.md
